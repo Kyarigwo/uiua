@@ -6,26 +6,27 @@
   inputs.crane = {
     url = "github:ipetkov/crane";
     inputs.nixpkgs.follows = "nixpkgs";
-    inputs.flake-utils.follows = "flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils, crane }: 
+  outputs = { self, nixpkgs, flake-utils, crane }:
     flake-utils.lib.eachDefaultSystem (system:
-    let 
+    let
       pkgs = nixpkgs.legacyPackages.${system};
       craneLib = crane.lib.${system};
       uiua-crate = craneLib.buildPackage {
         src = craneLib.cleanCargoSource (craneLib.path ./.);
-         buildInputs = nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
-           pkgs.iconv
-           pkgs.darwin.apple_sdk.frameworks.CoreServices
-           pkgs.darwin.apple_sdk.frameworks.Foundation
+        buildInputs = (nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
+          pkgs.iconv
+          pkgs.darwin.apple_sdk.frameworks.CoreServices
+          pkgs.darwin.apple_sdk.frameworks.Foundation
+        ]) ++ [
+          pkgs.libffi
         ];
       };
     in
       {
         packages.default = uiua-crate;
-        devShell = pkgs.mkShell {
+        devShell = craneLib.devShell {
           inputsFrom = builtins.attrValues self.packages.${system};
           nativeBuildInputs = [
             pkgs.clippy
