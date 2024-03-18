@@ -535,7 +535,7 @@ fn set_code_html(id: &str, code: &str) {
             SpanKind::Primitive(prim) => prim_class(prim),
             SpanKind::Number => "number-literal",
             SpanKind::String => "string-literal-span",
-            SpanKind::Comment => "comment-span",
+            SpanKind::Comment | SpanKind::OutputComment => "comment-span",
             SpanKind::Strand => "strand-span",
             _ => "",
         };
@@ -895,6 +895,16 @@ fn run_code_single(code: &str) -> (Vec<OutputItem>, Option<UiuaError>) {
                     continue;
                 }
                 _ => {}
+            }
+        }
+        // Try to convert the value to SVG
+        if let Ok(mut str) = value.as_string(&rt, "") {
+            if str.starts_with("<svg") && str.ends_with("</svg>") {
+                if !str.contains("xmlns") {
+                    str = str.replacen("<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"", 1);
+                }
+                stack.push(OutputItem::Svg(str));
+                continue;
             }
         }
         // Otherwise, just show the value

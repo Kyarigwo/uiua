@@ -8,14 +8,15 @@ use crate::{
     algorithm::{loops::flip, pervade::*},
     check::instrs_signature,
     cowslice::cowslice,
-    Array, ArrayValue, Function, ImplPrimitive, Instr, Primitive, Shape, Uiua, UiuaResult, Value,
+    Array, ArrayValue, Complex, Function, ImplPrimitive, Instr, Primitive, Shape, Signature, Uiua,
+    UiuaResult, Value,
 };
 
 pub fn reduce(depth: usize, env: &mut Uiua) -> UiuaResult {
     crate::profile_function!();
     let f = env.pop_function()?;
     let xs = env.pop(1)?;
-    match (f.as_flipped_primitive(env), xs) {
+    match (f.as_flipped_primitive(&env.asm), xs) {
         (Some((Primitive::Join, false)), mut xs) if env.value_fill().is_none() => {
             let depth = depth.min(xs.rank());
             if xs.rank() - depth < 2 {
@@ -41,7 +42,6 @@ pub fn reduce(depth: usize, env: &mut Uiua) -> UiuaResult {
                 return generic_reduce(f, Value::Complex(nums), depth, env);
             }
         }
-        #[cfg(feature = "bytes")]
         (Some((prim, flipped)), Value::Byte(bytes)) => {
             let fill = env.num_fill().ok();
             env.push::<Value>(match prim {
@@ -264,7 +264,7 @@ fn reduce_one(instrs: &[Instr], val: Value) -> Value {
 }
 
 macro_rules! reduce_math {
-    ($fname:ident, $ty:ty, $f:ident, $fill:ident) => {
+    ($fname:ident, $ty:ident, $f:ident, $fill:ident) => {
         #[allow(clippy::result_large_err)]
         fn $fname(
             prim: Primitive,
@@ -306,20 +306,7 @@ macro_rules! reduce_math {
 }
 
 reduce_math!(reduce_nums, f64, num_num, num_fill);
-reduce_math!(reduce_coms, crate::Complex, com_x, complex_fill);
-
-fn fast_reduce<T>(
-    arr: Array<T>,
-    identity: T,
-    default: Option<T>,
-    depth: usize,
-    f: impl Fn(T, T) -> T + Copy,
-) -> Array<T>
-where
-    T: ArrayValue + Copy,
-{
-    fast_reduce_different(arr, identity, default, depth, f, f)
-}
+reduce_math!(reduce_coms, Complex, com_x, complex_fill);
 
 fn fast_reduce_different<T, U>(
     arr: Array<T>,
@@ -333,6 +320,7 @@ where
     T: ArrayValue + Copy + Into<U>,
     U: ArrayValue + Copy,
 {
+    depth = depth.min(arr.rank());
     if depth == 0 && arr.rank() == 1 {
         return if let Some(default) = default {
             arr.data.into_iter().fold(default, fut).into()
@@ -343,13 +331,35 @@ where
             arr.data.into_iter().skip(1).fold(first, fut).into()
         };
     }
-    let mut arr = arr.convert();
+    fast_reduce(arr.convert(), identity, default, depth, fuu)
+}
+
+fn fast_reduce<T>(
+    mut arr: Array<T>,
+    identity: T,
+    default: Option<T>,
+    mut depth: usize,
+    f: impl Fn(T, T) -> T,
+) -> Array<T>
+where
+    T: ArrayValue + Copy,
+{
     depth = depth.min(arr.rank());
+    if depth == 0 && arr.rank() == 1 {
+        return if let Some(default) = default {
+            arr.data.into_iter().fold(default, f).into()
+        } else if arr.row_count() == 0 {
+            identity.into()
+        } else {
+            let first = arr.data[0];
+            arr.data.into_iter().skip(1).fold(first, f).into()
+        };
+    }
     match (arr.rank(), depth) {
         (r, d) if r == d => arr,
         (1, 0) => {
             let data = arr.data.as_mut_slice();
-            let reduced = default.into_iter().chain(data.iter().copied()).reduce(fuu);
+            let reduced = default.into_iter().chain(data.iter().copied()).reduce(f);
             if let Some(reduced) = reduced {
                 if data.is_empty() {
                     arr.data.extend(Some(reduced));
@@ -380,12 +390,12 @@ where
             let (acc, rest) = sliced.split_at_mut(row_len);
             if let Some(default) = default {
                 for acc in &mut *acc {
-                    *acc = fuu(default, *acc);
+                    *acc = f(default, *acc);
                 }
             }
             rest.chunks_exact(row_len).fold(acc, |acc, row| {
                 for (a, b) in acc.iter_mut().zip(row) {
-                    *a = fuu(*a, *b);
+                    *a = f(*a, *b);
                 }
                 acc
             });
@@ -409,12 +419,12 @@ where
                     let (acc, rest) = chunk.split_at_mut(chunk_row_len);
                     if let Some(default) = default {
                         for acc in &mut *acc {
-                            *acc = fuu(default, *acc);
+                            *acc = f(default, *acc);
                         }
                     }
                     rest.chunks_exact_mut(chunk_row_len).fold(acc, |acc, row| {
                         for (a, b) in acc.iter_mut().zip(row) {
-                            *a = fuu(*a, *b);
+                            *a = f(*a, *b);
                         }
                         acc
                     });
@@ -437,13 +447,23 @@ fn generic_reduce(f: Function, xs: Value, depth: usize, env: &mut Uiua) -> UiuaR
 pub fn reduce_content(env: &mut Uiua) -> UiuaResult {
     let f = env.pop_function()?;
     let xs = env.pop(1)?;
-    if let (1, Some((Primitive::Join, false))) = (xs.rank(), f.as_flipped_primitive(env)) {
-        let xs = xs
-            .into_rows()
-            .map(Value::unboxed)
-            .flat_map(Value::into_rows);
-        let val = Value::from_row_values(xs, env)?;
-        env.push(val);
+    if let (1, Some((Primitive::Join, false))) = (xs.rank(), f.as_flipped_primitive(&env.asm)) {
+        if xs.row_count() == 0 {
+            env.push(match xs {
+                Value::Box(_) => Value::default(),
+                value => value,
+            });
+            return Ok(());
+        }
+        let mut rows = xs.into_rows().map(Value::unboxed);
+        let mut acc = rows.next().unwrap();
+        if acc.rank() == 0 {
+            acc.shape_mut().insert(0, 1);
+        }
+        for row in rows {
+            acc = acc.join(row, env)?;
+        }
+        env.push(acc);
         return Ok(());
     }
     generic_reduce_impl(f, xs, 0, Value::unboxed, env)
@@ -533,7 +553,7 @@ pub fn scan(env: &mut Uiua) -> UiuaResult {
     if xs.rank() == 0 {
         return Err(env.error(format!("Cannot {} rank 0 array", Primitive::Scan.format())));
     }
-    match (f.as_flipped_primitive(env), xs) {
+    match (f.as_flipped_primitive(&env.asm), xs) {
         (Some((prim, flipped)), Value::Num(nums)) => {
             let arr = match prim {
                 Primitive::Eq => fast_scan(nums, |a, b| is_eq::num_num(a, b) as f64),
@@ -555,7 +575,6 @@ pub fn scan(env: &mut Uiua) -> UiuaResult {
             env.push(arr);
             Ok(())
         }
-        #[cfg(feature = "bytes")]
         (Some((prim, flipped)), Value::Byte(bytes)) => {
             match prim {
                 Primitive::Eq => env.push(fast_scan(bytes, is_eq::generic)),
@@ -676,7 +695,7 @@ pub fn unscan(env: &mut Uiua) -> UiuaResult {
     }
 
     match xs {
-        Value::Num(nums) => match f.as_flipped_primitive(env) {
+        Value::Num(nums) => match f.as_flipped_primitive(&env.asm) {
             Some((Primitive::Sub, false)) => {
                 env.push(fast_invscan(nums, sub::num_num));
                 return Ok(());
@@ -687,8 +706,7 @@ pub fn unscan(env: &mut Uiua) -> UiuaResult {
             }
             _ => xs = Value::Num(nums),
         },
-        #[cfg(feature = "bytes")]
-        Value::Byte(bytes) => match f.as_flipped_primitive(env) {
+        Value::Byte(bytes) => match f.as_flipped_primitive(&env.asm) {
             Some((Primitive::Sub, false)) => {
                 env.push(fast_invscan(bytes.convert(), sub::num_num));
                 return Ok(());
@@ -773,9 +791,10 @@ pub fn fold(env: &mut Uiua) -> UiuaResult {
     let iterable_count = sig.args - sig.outputs;
     let mut arrays = Vec::with_capacity(iterable_count);
     for i in 0..iterable_count {
-        let val = env.pop(("iterated array", i + 1))?;
+        let mut val = env.pop(("iterated array", i + 1))?;
         arrays.push(if val.row_count() == 1 {
-            Err(val.into_rows().next().unwrap())
+            val.unfix();
+            Err(val)
         } else {
             Ok(val.into_rows())
         });
@@ -833,7 +852,7 @@ pub fn adjacent(env: &mut Uiua) -> UiuaResult {
         return Err(env.error("Window size cannot be zero"));
     }
     let n = n_abs;
-    match (f.as_flipped_primitive(env), xs) {
+    match (f.as_flipped_primitive(&env.asm), xs) {
         (Some((prim, flipped)), Value::Num(nums)) => env.push(match prim {
             Primitive::Add => fast_adjacent(nums, n, env, add::num_num),
             Primitive::Sub if flipped => fast_adjacent(nums, n, env, flip(sub::num_num)),
@@ -849,7 +868,6 @@ pub fn adjacent(env: &mut Uiua) -> UiuaResult {
             Primitive::Min => fast_adjacent(nums, n, env, min::num_num),
             _ => return generic_adjacent(f, Value::Num(nums), n, env),
         }?),
-        #[cfg(feature = "bytes")]
         (Some((prim, flipped)), Value::Byte(bytes)) => env.push::<Value>(match prim {
             Primitive::Add => fast_adjacent(bytes.convert(), n, env, add::num_num)?.into(),
             Primitive::Sub if flipped => {
@@ -948,7 +966,9 @@ fn generic_adjacent(f: Function, xs: Value, n: usize, env: &mut Uiua) -> UiuaRes
     let sig = f.signature();
     if sig != (2, 1) {
         return Err(env.error(format!(
-            "adjacent's function's signature must be |2.1, but it is {sig}"
+            "Adjacent's function's signature must be {}, but it is {}",
+            Signature::new(2, 1),
+            sig
         )));
     }
     if xs.row_count() < n {

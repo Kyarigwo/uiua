@@ -106,7 +106,6 @@ impl BasicValue {
         } else if value.rank() == 1 {
             BasicValue::Arr(match value {
                 Value::Num(n) => n.data.iter().map(|n| BasicValue::Num(*n)).collect(),
-                #[cfg(feature = "bytes")]
                 Value::Byte(b) => b.data.iter().map(|b| BasicValue::Num(*b as f64)).collect(),
                 Value::Complex(c) => c.data.iter().map(|_| BasicValue::Other).collect(),
                 Value::Char(c) => c.data.iter().map(|_| BasicValue::Other).collect(),
@@ -266,7 +265,7 @@ impl<'a> VirtualEnv<'a> {
                 let mut vals = Vec::with_capacity(*count + *offset);
                 for i in 0..*count + *offset {
                     let val = self.pop_temp(*stack)?;
-                    if i > *offset {
+                    if i >= *offset {
                         self.stack.push(val.clone());
                     }
                     vals.push(val);

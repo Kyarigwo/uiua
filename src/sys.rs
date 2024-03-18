@@ -3,6 +3,7 @@ use std::{
     fmt,
     io::{stdin, Read},
     mem::take,
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
     time::Duration,
@@ -18,8 +19,8 @@ use parking_lot::Mutex;
 use serde::*;
 
 use crate::{
-    cowslice::cowslice, primitive::PrimDoc, Array, Boxed, FfiType, Signature, Uiua, UiuaResult,
-    Value,
+    algorithm::validate_size, cowslice::cowslice, primitive::PrimDoc, Array, Boxed, FfiType,
+    Signature, Uiua, UiuaResult, Value,
 };
 
 /// Access the built-in `example.ua` file
@@ -261,20 +262,6 @@ sys_op! {
     /// The stream handle `1` is stdout.
     /// The stream handle `2` is stderr.
     (2(0), Write, Stream, "&w", "write", [mutating]),
-    /// Import an item from a file
-    ///
-    /// The first argument is the path to the file. The second is the name of the item to import.
-    /// ex: Dub ← &i "example.ua" "Double"
-    ///   : Dub 5
-    /// To import multiple items, you can make a function that imports from a specific path.
-    /// ex: Ex ← &i "example.ua"
-    ///   : Double ← Ex "Double"
-    ///   : Square ← Ex "Square"
-    ///   : Square Double 5
-    ///
-    /// [&i] can only be used as the first function in a binding.
-    /// ex! &i "example.ua" "Double" 5
-    (2, Import, Filesystem, "&i", "import"),
     /// Invoke a path with the system's default program
     (1(1), Invoke, Command, "&invk", "invoke", [mutating]),
     /// Close a stream by its handle
@@ -504,12 +491,12 @@ sys_op! {
     (2(0), TcpSetWriteTimeout, Tcp, "&tcpswt", "tcp - set write timeout", [mutating]),
     /// Get the connection address of a TCP socket
     (1, TcpAddr, Tcp, "&tcpaddr", "tcp - address", [mutating]),
-    /// Make an HTTP request
+    /// Make an HTTP(S) request
     ///
     /// Takes in an 1.x HTTP request and returns an HTTP response.
     ///
     /// Requires the `Host` header to be set.
-    /// Using port 443 is recommended for HTTPS.
+    /// Using port 443 makes an HTTPS request. Any other port makes an HTTP request.
     ///
     /// ex: &httpsw "GET / " &tcpc "example.com:443"
     ///
@@ -524,7 +511,7 @@ sys_op! {
     /// - 2 trailing newlines (if there is no body)
     /// - The HTTP version
     /// - The `Host` header (if not defined)
-    (2, HttpsWrite, Tcp, "&httpsw", "http - Make an HTTP request", [mutating]),
+    (2, HttpsWrite, Tcp, "&httpsw", "https - Make an HTTP(S) request", [mutating]),
     /// Call a foreign function interface
     ///
     /// *Warning ⚠️: Using FFI is deeply unsafe. Calling a function incorrectly is undefined behavior.*
@@ -600,7 +587,7 @@ sys_op! {
 ///
 /// Other handles can be used by files or sockets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Handle(pub u64);
+pub struct Handle(pub(crate) u64);
 
 impl Handle {
     const STDIN: Self = Self(0);
@@ -616,14 +603,56 @@ impl From<usize> for Handle {
     }
 }
 
-impl From<Handle> for Value {
-    fn from(handle: Handle) -> Self {
-        (handle.0 as f64).into()
+impl Handle {
+    pub(crate) fn value(self, kind: HandleKind) -> Value {
+        let mut arr = Array::from(self.0 as f64);
+        arr.meta_mut().handle_kind = Some(kind);
+        Boxed(arr.into()).into()
+    }
+}
+
+impl Value {
+    /// Attempt to convert the array to systme handle
+    pub fn as_handle(&self, env: &Uiua, mut expected: &'static str) -> UiuaResult<Handle> {
+        if expected.is_empty() {
+            expected = "Expected value to be a handle";
+        }
+        match self {
+            Value::Box(b) => {
+                if let Some(b) = b.as_scalar() {
+                    b.0.as_nat(env, expected).map(|h| Handle(h as u64))
+                } else {
+                    Err(env.error(format!("{expected}, but it is rank {}", b.rank())))
+                }
+            }
+            value => value.as_nat(env, expected).map(|h| Handle(h as u64)),
+        }
     }
 }
 
 /// The function type passed to `&ast`
 pub type AudioStreamFn = Box<dyn FnMut(&[f64]) -> UiuaResult<Vec<[f64; 2]>> + Send>;
+
+/// The kind of a handle
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[allow(missing_docs)]
+pub enum HandleKind {
+    File(PathBuf),
+    TcpListener(SocketAddr),
+    TcpSocket(SocketAddr),
+    ChildProcess(String),
+}
+
+impl fmt::Display for HandleKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "file {}", path.display()),
+            Self::TcpListener(addr) => write!(f, "tcp listener {}", addr),
+            Self::TcpSocket(addr) => write!(f, "tcp socket {}", addr),
+            Self::ChildProcess(com) => write!(f, "child {com}"),
+        }
+    }
+}
 
 /// Trait for defining a system backend
 #[allow(unused_variables)]
@@ -776,8 +805,8 @@ pub trait SysBackend: Any + Send + Sync + 'static {
     fn tcp_connect(&self, addr: &str) -> Result<Handle, String> {
         Err("TCP sockets are not supported in this environment".into())
     }
-    /// Get the connection address of a TCP socket
-    fn tcp_addr(&self, handle: Handle) -> Result<String, String> {
+    /// Get the connection address of a TCP socket or listener
+    fn tcp_addr(&self, handle: Handle) -> Result<SocketAddr, String> {
         Err("TCP sockets are not supported in this environment".into())
     }
     /// Set a TCP socket to non-blocking mode
@@ -846,7 +875,7 @@ pub trait SysBackend: Any + Send + Sync + 'static {
     /// Load a git repo as a module
     ///
     /// The returned path should be loadable via [`SysBackend::file_read_all`]
-    fn load_git_module(&self, url: &str) -> Result<PathBuf, String> {
+    fn load_git_module(&self, url: &str, branch: Option<&str>) -> Result<PathBuf, String> {
         Err("Loading git modules is not supported in this environment".into())
     }
 }
@@ -924,12 +953,10 @@ impl SysOp {
                 if !env.rt.do_top_io {
                     return Ok(());
                 }
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .print_str_stdout(&s)
                     .map_err(|e| env.error(e))?;
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .print_str_stdout("\n")
                     .map_err(|e| env.error(e))?;
             }
@@ -938,8 +965,7 @@ impl SysOp {
                 if !env.rt.do_top_io {
                     return Ok(());
                 }
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .print_str_stdout(&val.format())
                     .map_err(|e| env.error(e))?;
             }
@@ -948,12 +974,10 @@ impl SysOp {
                 if !env.rt.do_top_io {
                     return Ok(());
                 }
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .print_str_stdout(&val.format())
                     .map_err(|e| env.error(e))?;
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .print_str_stdout("\n")
                     .map_err(|e| env.error(e))?;
             }
@@ -973,8 +997,7 @@ impl SysOp {
                 if !env.rt.do_top_io {
                     return Ok(());
                 }
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .set_raw_mode(raw_mode)
                     .map_err(|e| env.error(e))?;
             }
@@ -998,15 +1021,17 @@ impl SysOp {
                 let path = env.pop(1)?.as_string(env, "Path must be a string")?;
                 let handle = (env.rt.backend)
                     .open_file(path.as_ref())
-                    .map_err(|e| env.error(e))?;
+                    .map_err(|e| env.error(e))?
+                    .value(HandleKind::File(path.into()));
                 env.push(handle);
             }
             SysOp::FCreate => {
                 let path = env.pop(1)?.as_string(env, "Path must be a string")?;
-                let handle = (env.rt.backend)
+                let handle: Value = (env.rt.backend)
                     .create_file(path.as_ref())
-                    .map_err(|e| env.error(e))?;
-                env.push(handle.0 as f64);
+                    .map_err(|e| env.error(e))?
+                    .value(HandleKind::File(path.into()));
+                env.push(handle);
             }
             SysOp::FDelete => {
                 let path = env.pop(1)?.as_string(env, "Path must be a string")?;
@@ -1020,10 +1045,10 @@ impl SysOp {
                 let count = env
                     .pop(1)?
                     .as_nat_or_inf(env, "Count must be an integer or infinity")?;
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                if let Some(count) = count {
+                    validate_size::<u8>(count, env)?;
+                }
+                let handle = env.pop(2)?.as_handle(env, "")?;
                 let bytes = match handle {
                     Handle::STDOUT => return Err(env.error("Cannot read from stdout")),
                     Handle::STDERR => return Err(env.error("Cannot read from stderr")),
@@ -1057,10 +1082,10 @@ impl SysOp {
                 let count = env
                     .pop(1)?
                     .as_nat_or_inf(env, "Count must be an integer or infinity")?;
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                if let Some(count) = count {
+                    validate_size::<u8>(count, env)?;
+                }
+                let handle = env.pop(2)?.as_handle(env, "")?;
                 let bytes = match handle {
                     Handle::STDOUT => return Err(env.error("Cannot read from stdout")),
                     Handle::STDERR => return Err(env.error("Cannot read from stderr")),
@@ -1091,10 +1116,7 @@ impl SysOp {
             }
             SysOp::ReadUntil => {
                 let delim = env.pop(1)?;
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                let handle = env.pop(2)?.as_handle(env, "")?;
                 if delim.rank() > 1 {
                     return Err(env.error("Delimiter must be a rank 0 or 1 string or byte array"));
                 }
@@ -1105,7 +1127,6 @@ impl SysOp {
                         let mut is_string = false;
                         let delim_bytes: Vec<u8> = match delim {
                             Value::Num(arr) => arr.data.iter().map(|&x| x as u8).collect(),
-                            #[cfg(feature = "bytes")]
                             Value::Byte(arr) => arr.data.into(),
                             Value::Char(arr) => {
                                 is_string = true;
@@ -1139,7 +1160,6 @@ impl SysOp {
                                 .map_err(|e| env.error(e))?;
                             env.push(Array::from(bytes.as_slice()));
                         }
-                        #[cfg(feature = "bytes")]
                         Value::Byte(arr) => {
                             let delim: Vec<u8> = arr.data.into();
                             let bytes = env
@@ -1165,20 +1185,13 @@ impl SysOp {
             }
             SysOp::Write => {
                 let data = env.pop(1)?;
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                let handle = env.pop(2)?.as_handle(env, "")?;
                 let bytes: Vec<u8> = match data {
                     Value::Num(arr) => arr.data.iter().map(|&x| x as u8).collect(),
-                    #[cfg(feature = "bytes")]
                     Value::Byte(arr) => arr.data.into(),
-
-                    Value::Complex(_) => {
-                        return Err(env.error("Cannot write complex array to file"))
-                    }
+                    Value::Complex(_) => return Err(env.error("Cannot write complex array")),
                     Value::Char(arr) => arr.data.iter().collect::<String>().into(),
-                    Value::Box(_) => return Err(env.error("Cannot write box array to file")),
+                    Value::Box(_) => return Err(env.error("Cannot write box array")),
                 };
                 match handle {
                     Handle::STDOUT => env
@@ -1234,7 +1247,6 @@ impl SysOp {
                 let data = env.pop(2)?;
                 let bytes: Vec<u8> = match data {
                     Value::Num(arr) => arr.data.iter().map(|&x| x as u8).collect(),
-                    #[cfg(feature = "bytes")]
                     Value::Byte(arr) => arr.data.into(),
 
                     Value::Complex(_) => {
@@ -1243,8 +1255,7 @@ impl SysOp {
                     Value::Char(arr) => arr.data.iter().collect::<String>().into(),
                     Value::Box(_) => return Err(env.error("Cannot write box array to file")),
                 };
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .file_write_all(path.as_ref(), &bytes)
                     .or_else(|e| {
                         if path == "example.ua" {
@@ -1272,12 +1283,6 @@ impl SysOp {
                 let is_file = env.rt.backend.is_file(&path).map_err(|e| env.error(e))?;
                 env.push(is_file);
             }
-            SysOp::Import => {
-                return Err(env.error(
-                    "&i is not valid in this position. \
-                    It must be the first item in a binding.",
-                ));
-            }
             SysOp::Invoke => {
                 let path = env.pop(1)?.as_string(env, "Invoke path must be a string")?;
                 env.rt.backend.invoke(&path).map_err(|e| env.error(e))?;
@@ -1286,7 +1291,6 @@ impl SysOp {
                 #[cfg(feature = "image")]
                 {
                     let bytes: crate::cowslice::CowSlice<u8> = match env.pop(1)? {
-                        #[cfg(feature = "bytes")]
                         Value::Byte(arr) => {
                             if arr.rank() != 1 {
                                 return Err(env.error(format!(
@@ -1406,7 +1410,6 @@ impl SysOp {
                 #[cfg(feature = "audio_encode")]
                 {
                     let bytes: crate::cowslice::CowSlice<u8> = match env.pop(1)? {
-                        #[cfg(feature = "bytes")]
                         Value::Byte(arr) => {
                             if arr.rank() != 1 {
                                 return Err(env.error(format!(
@@ -1513,8 +1516,7 @@ impl SysOp {
             }
             SysOp::ClipboardSet => {
                 let contents = env.pop(1)?.as_string(env, "Contents must be a string")?;
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .set_clipboard(&contents)
                     .map_err(|e| env.error(e))?;
             }
@@ -1527,41 +1529,41 @@ impl SysOp {
             }
             SysOp::TcpListen => {
                 let addr = env.pop(1)?.as_string(env, "Address must be a string")?;
-                let handle = env.rt.backend.tcp_listen(&addr).map_err(|e| env.error(e))?;
+                let handle = (env.rt.backend)
+                    .tcp_listen(&addr)
+                    .map_err(|e| env.error(e))?;
+                let sock_addr = env.rt.backend.tcp_addr(handle).map_err(|e| env.error(e))?;
+                let handle = handle.value(HandleKind::TcpListener(sock_addr));
                 env.push(handle);
             }
             SysOp::TcpAccept => {
-                let handle = env
-                    .pop(1)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
-                let new_handle = (env.rt.backend)
+                let handle = env.pop(1)?.as_handle(env, "")?;
+                let handle = (env.rt.backend)
                     .tcp_accept(handle)
                     .map_err(|e| env.error(e))?;
-                env.push(new_handle);
+                let addr = (env.rt.backend)
+                    .tcp_addr(handle)
+                    .map_err(|e| env.error(e))?;
+                let handle = handle.value(HandleKind::TcpSocket(addr));
+                env.push(handle);
             }
             SysOp::TcpConnect => {
                 let addr = env.pop(1)?.as_string(env, "Address must be a string")?;
                 let handle = (env.rt.backend)
                     .tcp_connect(&addr)
                     .map_err(|e| env.error(e))?;
+                let sock_addr = env.rt.backend.tcp_addr(handle).map_err(|e| env.error(e))?;
+                let handle = handle.value(HandleKind::TcpSocket(sock_addr));
                 env.push(handle);
             }
             SysOp::TcpAddr => {
-                let handle = env
-                    .pop(1)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                let handle = env.pop(1)?.as_handle(env, "")?;
                 let addr = env.rt.backend.tcp_addr(handle).map_err(|e| env.error(e))?;
-                env.push(addr);
+                env.push(addr.to_string());
             }
             SysOp::TcpSetNonBlocking => {
-                let handle = env
-                    .pop(1)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
-                env.rt
-                    .backend
+                let handle = env.pop(1)?.as_handle(env, "")?;
+                (env.rt.backend)
                     .tcp_set_non_blocking(handle, true)
                     .map_err(|e| env.error(e))?;
             }
@@ -1572,12 +1574,8 @@ impl SysOp {
                 } else {
                     Some(Duration::from_secs_f64(timeout))
                 };
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
-                env.rt
-                    .backend
+                let handle = env.pop(2)?.as_handle(env, "")?;
+                (env.rt.backend)
                     .tcp_set_read_timeout(handle, timeout)
                     .map_err(|e| env.error(e))?;
             }
@@ -1588,12 +1586,8 @@ impl SysOp {
                 } else {
                     Some(Duration::from_secs_f64(timeout))
                 };
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
-                env.rt
-                    .backend
+                let handle = env.pop(2)?.as_handle(env, "")?;
+                (env.rt.backend)
                     .tcp_set_write_timeout(handle, timeout)
                     .map_err(|e| env.error(e))?;
             }
@@ -1601,20 +1595,14 @@ impl SysOp {
                 let http = env
                     .pop(1)?
                     .as_string(env, "HTTP request must be a string")?;
-                let handle = env
-                    .pop(2)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                let handle = env.pop(2)?.as_handle(env, "")?;
                 let res = (env.rt.backend)
                     .https_get(&http, handle)
                     .map_err(|e| env.error(e))?;
                 env.push(res);
             }
             SysOp::Close => {
-                let handle = env
-                    .pop(1)?
-                    .as_nat(env, "Handle must be an natural number")?
-                    .into();
+                let handle = env.pop(1)?.as_handle(env, "")?;
                 env.rt.backend.close(handle).map_err(|e| env.error(e))?;
             }
             SysOp::RunInherit => {
@@ -1640,13 +1628,13 @@ impl SysOp {
                 let args: Vec<_> = args.iter().map(|s| s.as_str()).collect();
                 let handle = (env.rt.backend)
                     .run_command_stream(&command, &args)
-                    .map_err(|e| env.error(e))?;
+                    .map_err(|e| env.error(e))?
+                    .value(HandleKind::ChildProcess(command));
                 env.push(handle);
             }
             SysOp::ChangeDirectory => {
                 let path = env.pop(1)?.as_string(env, "Path must be a string")?;
-                env.rt
-                    .backend
+                (env.rt.backend)
                     .change_directory(&path)
                     .map_err(|e| env.error(e))?;
             }
@@ -1744,7 +1732,6 @@ fn value_to_command(value: &Value, env: &Uiua) -> UiuaResult<(String, Vec<String
                 value.type_name_plural()
             )))
         }
-        #[cfg(feature = "bytes")]
         Value::Byte(_) => {
             return Err(env.error(format!(
                 "Command must be a string or box array, but it is {}",
@@ -1794,7 +1781,6 @@ pub fn value_to_image(value: &Value) -> Result<DynamicImage, String> {
     }
     let bytes = match value {
         Value::Num(nums) => nums.data.iter().map(|f| (*f * 255.0) as u8).collect(),
-        #[cfg(feature = "bytes")]
         Value::Byte(bytes) => bytes.data.iter().map(|&b| (b > 0) as u8 * 255).collect(),
         _ => return Err("Image must be a numeric array".into()),
     };
@@ -1829,7 +1815,6 @@ pub fn value_to_image(value: &Value) -> Result<DynamicImage, String> {
 pub fn value_to_sample(audio: &Value) -> Result<Vec<[f32; 2]>, String> {
     let unrolled: Vec<f32> = match audio {
         Value::Num(nums) => nums.data.iter().map(|&f| f as f32).collect(),
-        #[cfg(feature = "bytes")]
         Value::Byte(byte) => byte.data.iter().map(|&b| b as f32).collect(),
         _ => return Err("Audio must be a numeric array".into()),
     };
@@ -1870,7 +1855,6 @@ pub fn value_to_sample(audio: &Value) -> Result<Vec<[f32; 2]>, String> {
 pub fn value_to_audio_channels(audio: &Value) -> Result<Vec<Vec<f64>>, String> {
     let interleaved: Vec<f64> = match audio {
         Value::Num(nums) => nums.data.iter().copied().collect(),
-        #[cfg(feature = "bytes")]
         Value::Byte(byte) => byte.data.iter().map(|&b| b as f64).collect(),
         _ => return Err("Audio must be a numeric array".into()),
     };

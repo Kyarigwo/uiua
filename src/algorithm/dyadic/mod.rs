@@ -22,7 +22,7 @@ use crate::{
     Shape, Uiua, UiuaResult,
 };
 
-use super::{ArrayCmpSlice, FillContext};
+use super::{op_bytes_retry_fill, ArrayCmpSlice, FillContext};
 
 impl Value {
     pub(crate) fn bin_coerce_to_boxes<T, C: FillContext, E: ToString>(
@@ -128,9 +128,14 @@ impl<T: Clone + std::fmt::Debug> Array<T> {
 
         let a_row_shape = &a.shape[a_depth..];
         let b_row_shape = &b.shape[b_depth..];
+        let a_row_len: usize = a_row_shape.iter().product();
+        let b_row_len: usize = b_row_shape.iter().product();
+        if a_row_len == 0 || b_row_len == 0 {
+            return Ok(());
+        }
         for (a, b) in (a.data.as_mut_slice())
-            .chunks_exact_mut(a_row_shape.iter().product())
-            .zip(b.data.as_slice().chunks_exact(b_row_shape.iter().product()))
+            .chunks_exact_mut(a_row_len)
+            .zip(b.data.as_slice().chunks_exact(b_row_len))
         {
             f(a_row_shape, a, b_row_shape, b, ctx)?;
         }
@@ -144,7 +149,7 @@ impl Value {
         let target_shape = shape.as_number_list(
             env,
             "Shape should be a single natural number \
-                or a list of integers or infinity",
+            or a list of integers or infinity",
             |n| n.fract() == 0.0 || n.is_infinite(),
             |n| {
                 if n.is_infinite() {
@@ -158,7 +163,6 @@ impl Value {
             let n = target_shape[0];
             match self {
                 Value::Num(a) => a.reshape_scalar(n),
-                #[cfg(feature = "bytes")]
                 Value::Byte(a) => a.reshape_scalar(n),
                 Value::Complex(a) => a.reshape_scalar(n),
                 Value::Char(a) => a.reshape_scalar(n),
@@ -167,7 +171,6 @@ impl Value {
         } else {
             match self {
                 Value::Num(a) => a.reshape(&target_shape, env),
-                #[cfg(feature = "bytes")]
                 Value::Byte(a) => {
                     if env.num_fill().is_ok() && env.byte_fill().is_err() {
                         let mut arr: Array<f64> = a.convert_ref();
@@ -240,12 +243,8 @@ impl<T: ArrayValue> Array<T> {
     pub fn reshape(&mut self, dims: &[Result<isize, bool>], env: &Uiua) -> UiuaResult {
         let fill = env.scalar_fill::<T>();
         let axes = derive_shape(&self.shape, dims, fill.is_ok(), env)?;
-        if self.is_map()
-            && axes
-                .first()
-                .map_or(true, |&d| d.unsigned_abs() != self.row_count())
-        {
-            return Ok(());
+        if (axes.first()).map_or(true, |&d| d.unsigned_abs() != self.row_count()) {
+            self.take_map_keys();
         }
         let reversed_axes: Vec<usize> = axes
             .iter()
@@ -367,9 +366,7 @@ fn derive_shape(
 impl Value {
     /// `rerank` this value with another
     pub fn rerank(&mut self, rank: &Self, env: &Uiua) -> UiuaResult {
-        if self.is_map() {
-            return Ok(());
-        }
+        self.take_map_keys();
         let irank = rank.as_int(env, "Rank must be a natural number")?;
         let shape = self.shape_mut();
         let rank = irank.unsigned_abs();
@@ -457,7 +454,6 @@ impl Value {
         Ok(if self.rank() == 0 {
             match kept {
                 Value::Num(a) => a.scalar_keep(counts[0]).into(),
-                #[cfg(feature = "bytes")]
                 Value::Byte(a) => a.scalar_keep(counts[0]).into(),
                 Value::Complex(a) => a.scalar_keep(counts[0]).into(),
                 Value::Char(a) => a.scalar_keep(counts[0]).into(),
@@ -466,7 +462,6 @@ impl Value {
         } else {
             match kept {
                 Value::Num(a) => a.list_keep(&counts, env)?.into(),
-                #[cfg(feature = "bytes")]
                 Value::Byte(a) => a.list_keep(&counts, env)?.into(),
                 Value::Complex(a) => a.list_keep(&counts, env)?.into(),
                 Value::Char(a) => a.list_keep(&counts, env)?.into(),
@@ -485,12 +480,35 @@ impl Value {
         }
         kept.generic_bin_into(
             into,
-            |a, b| a.unkeep(&counts, b, env).map(Into::into),
-            |a, b| a.unkeep(&counts, b, env).map(Into::into),
-            |a, b| a.unkeep(&counts, b, env).map(Into::into),
-            |a, b| a.unkeep(&counts, b, env).map(Into::into),
-            |a, b| a.unkeep(&counts, b, env).map(Into::into),
+            |a, b| a.undo_keep(&counts, b, env).map(Into::into),
+            |a, b| a.undo_keep(&counts, b, env).map(Into::into),
+            |a, b| a.undo_keep(&counts, b, env).map(Into::into),
+            |a, b| a.undo_keep(&counts, b, env).map(Into::into),
+            |a, b| a.undo_keep(&counts, b, env).map(Into::into),
             |a, b| env.error(format!("Cannot unkeep {a} array with {b} array")),
+        )
+    }
+    pub(crate) fn unkeep(&self, kept: Self, env: &Uiua) -> UiuaResult<Self> {
+        let counts = self.as_nats(
+            env,
+            "Keep amount must be a natural number \
+            or list of natural numbers",
+        )?;
+        if self.rank() == 0 {
+            return Err(env.error("Cannot invert scalar keep"));
+        }
+        kept.generic_into(
+            |a| a.unkeep(&counts, env).map(Into::into),
+            |a| {
+                op_bytes_retry_fill(
+                    a,
+                    |a| a.unkeep(&counts, env).map(Into::into),
+                    |a| a.unkeep(&counts, env).map(Into::into),
+                )
+            },
+            |a| a.unkeep(&counts, env).map(Into::into),
+            |a| a.unkeep(&counts, env).map(Into::into),
+            |a| a.unkeep(&counts, env).map(Into::into),
         )
     }
 }
@@ -535,6 +553,7 @@ impl<T: ArrayValue> Array<T> {
     }
     /// `keep` this array with some counts
     pub fn list_keep(mut self, counts: &[usize], env: &Uiua) -> UiuaResult<Self> {
+        self.take_map_keys();
         let mut amount = Cow::Borrowed(counts);
         match amount.len().cmp(&self.row_count()) {
             Ordering::Equal => {}
@@ -542,7 +561,7 @@ impl<T: ArrayValue> Array<T> {
                 Ok(fill) => {
                     if fill < 0.0 || fill.fract() != 0.0 {
                         return Err(env.error(format!(
-                            "Fill value for keep must be a non-negative\
+                            "Fill value for keep must be a non-negative \
                             integer, but it is {fill}"
                         )));
                     }
@@ -563,18 +582,18 @@ impl<T: ArrayValue> Array<T> {
                 return Err(env.error(match env.scalar_fill::<f64>() {
                     Ok(_) => {
                         format!(
-                            "Cannot keep array with shape {} with array of shape {}.\
-                            A fill value is available, but keep can only been filled\
+                            "Cannot keep array with shape {} with array of shape {}. \
+                            A fill value is available, but keep can only been filled \
                             if there are fewer counts than rows.",
                             self.shape(),
-                            FormatShape(amount.as_ref())
+                            FormatShape(&[amount.len()])
                         )
                     }
                     Err(e) => {
                         format!(
                             "Cannot keep array with shape {} with array of shape {}{e}",
                             self.shape(),
-                            FormatShape(amount.as_ref())
+                            FormatShape(&[amount.len()])
                         )
                     }
                 }))
@@ -635,7 +654,7 @@ impl<T: ArrayValue> Array<T> {
         self.validate_shape();
         Ok(self)
     }
-    pub(crate) fn unkeep(self, counts: &[usize], into: Self, env: &Uiua) -> UiuaResult<Self> {
+    fn undo_keep(self, counts: &[usize], into: Self, env: &Uiua) -> UiuaResult<Self> {
         if counts.iter().any(|&n| n > 1) {
             return Err(env.error("Cannot invert keep with non-boolean counts"));
         }
@@ -664,6 +683,46 @@ impl<T: ArrayValue> Array<T> {
         }
         Self::from_row_arrays(new_rows, env)
     }
+    fn unkeep(self, counts: &[usize], env: &Uiua) -> UiuaResult<Self> {
+        let mut trues = 0;
+        for &count in counts {
+            if count > 1 {
+                return Err(env.error("Cannot unkeep with non-boolean counts"));
+            }
+            if count == 1 {
+                trues += 1;
+            }
+        }
+        if trues != self.row_count() {
+            return Err(env.error(format!(
+                "Cannot unkeep array with shape {} with mask of {} 1s",
+                self.shape(),
+                trues
+            )));
+        }
+        let row_len = self.row_len();
+        let mut new_shape = self.shape.clone();
+        new_shape[0] = counts.len();
+        let mut new_data = EcoVec::with_capacity(counts.len() * row_len);
+        let mut rows = self.into_rows();
+        let mut fill: Option<T> = None;
+        for &count in counts {
+            if count == 1 {
+                new_data.extend(rows.next().unwrap().data);
+            } else {
+                if fill.is_none() {
+                    match env.scalar_fill::<T>() {
+                        Ok(f) => fill = Some(f),
+                        Err(e) => {
+                            return Err(env.error(format!("Cannot unkeep without fill{e}")).fill())
+                        }
+                    }
+                }
+                new_data.extend(repeat(fill.as_ref().unwrap()).take(row_len).cloned());
+            }
+        }
+        Ok(Array::new(new_shape, new_data))
+    }
 }
 
 impl Value {
@@ -678,15 +737,10 @@ impl Value {
         b_depth: usize,
         env: &Uiua,
     ) -> UiuaResult<Self> {
-        let by_ints = || {
-            let ints =
-                self.as_integer_array(env, "Rotation amount must be an array of integers")?;
-            if ints.element_count() == 0 {
-                return Err(env.error("Rotation amount cannot be empty"));
-            }
-            Ok(ints)
-        };
-        #[cfg(feature = "bytes")]
+        if self.row_count() == 0 {
+            return Ok(rotated);
+        }
+        let by_ints = || self.as_integer_array(env, "Rotation amount must be an array of integers");
         if env.scalar_fill::<f64>().is_ok() {
             if let Value::Byte(bytes) = &rotated {
                 rotated = bytes.convert_ref::<f64>().into();
@@ -694,7 +748,6 @@ impl Value {
         }
         match &mut rotated {
             Value::Num(a) => a.rotate_depth(by_ints()?, b_depth, a_depth, env)?,
-            #[cfg(feature = "bytes")]
             Value::Byte(a) => a.rotate_depth(by_ints()?, b_depth, a_depth, env)?,
             Value::Complex(a) => a.rotate_depth(by_ints()?, b_depth, a_depth, env)?,
             Value::Char(a) => a.rotate_depth(by_ints()?, b_depth, a_depth, env)?,
@@ -818,7 +871,6 @@ impl Value {
         let size_spec = self.as_ints(env, "Window size must be an integer or list of integers")?;
         Ok(match from {
             Value::Num(a) => a.windows(&size_spec, env)?.into(),
-            #[cfg(feature = "bytes")]
             Value::Byte(a) => a.windows(&size_spec, env)?.into(),
             Value::Complex(a) => a.windows(&size_spec, env)?.into(),
             Value::Char(a) => a.windows(&size_spec, env)?.into(),

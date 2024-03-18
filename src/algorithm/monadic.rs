@@ -27,31 +27,9 @@ impl Value {
     pub fn deshape(&mut self) {
         self.deshape_depth(0);
     }
-    /// Add a 1-length dimension to the front of the value's shape
-    pub fn fix(&mut self) {
-        self.fix_depth(0);
-    }
-    pub(crate) fn fix_depth(&mut self, depth: usize) {
-        let depth = depth.min(self.rank());
-        self.shape_mut().insert(depth, 1);
-    }
-    pub(crate) fn unfix(&mut self) {
-        if self.is_map() {
-            return;
-        }
-        let shape = self.shape_mut();
-        if shape.starts_with(&[1]) {
-            shape.remove(0);
-        } else if shape.len() >= 2 {
-            let new_first_dim = shape[0] * shape[1];
-            shape.drain(0..2);
-            shape.insert(0, new_first_dim);
-        }
-    }
     pub(crate) fn deshape_depth(&mut self, depth: usize) {
         match self {
             Value::Num(n) => n.deshape_depth(depth),
-            #[cfg(feature = "bytes")]
             Value::Byte(b) => b.deshape_depth(depth),
             Value::Complex(c) => c.deshape_depth(depth),
             Value::Char(c) => c.deshape_depth(depth),
@@ -97,7 +75,8 @@ impl Value {
                         .and_then(|n| denom.parse::<f64>().map(|d| n / d)),
                     None => s.parse::<f64>(),
                 }
-                .map_err(|e| env.error(format!("Cannot parse into number: {}", e)))?
+                .map_err(|e| env.error(format!("Cannot parse into number: {}", e)))
+                .or_else(|e| env.num_fill().map_err(|_| e))?
                 .into()
             }
             (Value::Box(arr), []) => {
@@ -129,7 +108,6 @@ impl Value {
                     .collect();
                 Array::new(nums.shape.clone(), new_data).into()
             }
-            #[cfg(feature = "bytes")]
             Value::Byte(bytes) => {
                 let new_data: CowSlice<Boxed> = (bytes.data.iter().map(|v| v.to_string()))
                     .map(Value::from)
@@ -159,11 +137,14 @@ impl<T: ArrayValue> Array<T> {
         if self.rank() == 1 {
             return;
         }
+        if self.is_map() {
+            self.take_map_keys();
+        }
         self.shape = self.element_count().into();
     }
     pub(crate) fn deshape_depth(&mut self, mut depth: usize) {
         if self.is_map() {
-            return;
+            self.take_map_keys();
         }
         depth = depth.min(self.rank());
         let deshaped = self.shape.split_off(depth).into_iter().product();
@@ -468,7 +449,6 @@ impl Value {
     pub(crate) fn transpose_depth(&mut self, depth: usize, amnt: i32) {
         match self {
             Value::Num(n) => n.transpose_depth(depth, amnt),
-            #[cfg(feature = "bytes")]
             Value::Byte(b) => b.transpose_depth(depth, amnt),
             Value::Complex(c) => c.transpose_depth(depth, amnt),
             Value::Char(c) => c.transpose_depth(depth, amnt),
@@ -493,7 +473,7 @@ impl<T: ArrayValue> Array<T> {
     pub(crate) fn transpose_depth(&mut self, mut depth: usize, amnt: i32) {
         crate::profile_function!();
         if depth == 0 && self.is_map() {
-            return;
+            self.take_map_keys();
         }
         depth = depth.min(self.rank());
         let trans_count = amnt.unsigned_abs() as usize;
@@ -617,24 +597,30 @@ impl Value {
         if self.rank() == 0 {
             return 0.into();
         }
-        self.generic_ref(
-            Array::classify,
-            Array::classify,
-            Array::classify,
-            Array::classify,
-            Array::classify,
-        )
-        .into_iter()
-        .collect()
+        let map_keys = self.map_keys().cloned();
+        let mut val: Value = self
+            .generic_ref(
+                Array::classify,
+                Array::classify,
+                Array::classify,
+                Array::classify,
+                Array::classify,
+            )
+            .into_iter()
+            .collect();
+        if let Some(map_keys) = map_keys {
+            val.meta_mut().map_keys = Some(map_keys);
+        }
+        val
     }
     /// `deduplicate` the rows of the value
-    pub fn deduplicate(&mut self) {
+    pub fn deduplicate(&mut self, env: &Uiua) -> UiuaResult {
         self.generic_mut_shallow(
-            Array::deduplicate,
-            Array::deduplicate,
-            Array::deduplicate,
-            Array::deduplicate,
-            Array::deduplicate,
+            |a| a.deduplicate(env),
+            |a| a.deduplicate(env),
+            |a| a.deduplicate(env),
+            |a| a.deduplicate(env),
+            |a| a.deduplicate(env),
         )
     }
     /// Mask the `unique` rows of the value
@@ -741,10 +727,13 @@ impl<T: ArrayValue> Array<T> {
         classified
     }
     /// `deduplicate` the rows of the array
-    pub fn deduplicate(&mut self) {
+    pub fn deduplicate(&mut self, env: &Uiua) -> UiuaResult {
         if self.rank() == 0 {
-            return;
+            return Ok(());
         }
+        let map_keys_unique = self
+            .take_map_keys()
+            .map(|keys| (keys.into_value(), self.unique()));
         let mut deduped = CowSlice::new();
         let mut seen = HashSet::new();
         let mut new_len = 0;
@@ -756,12 +745,18 @@ impl<T: ArrayValue> Array<T> {
         }
         self.data = deduped;
         self.shape[0] = new_len;
+        if let Some((keys, unique)) = map_keys_unique {
+            let keys = Value::from(unique).keep(keys, env)?;
+            self.map(keys, env)?;
+        }
+        Ok(())
     }
     /// Mask the `unique` rows of the array
     pub fn unique(&self) -> Array<u8> {
         if self.rank() == 0 {
             return 1u8.into();
         }
+        let map_keys = self.map_keys().cloned();
         let mut seen = HashSet::new();
         let mut mask = eco_vec![0u8; self.row_count()];
         let mask_slice = mask.make_mut();
@@ -772,6 +767,7 @@ impl<T: ArrayValue> Array<T> {
         }
         let mut arr = Array::new([self.row_count()], mask);
         arr.meta_mut().flags.set(ArrayFlags::BOOLEAN, true);
+        arr.meta_mut().map_keys = map_keys;
         arr
     }
 }
@@ -780,7 +776,6 @@ impl Value {
     /// Encode the `bits` of the value
     pub fn bits(&self, env: &Uiua) -> UiuaResult<Array<u8>> {
         match self {
-            #[cfg(feature = "bytes")]
             Value::Byte(n) => n.convert_ref().bits(env),
             Value::Num(n) => n.bits(env),
             _ => Err(env.error("Argument to bits must be an array of natural numbers")),
@@ -789,7 +784,6 @@ impl Value {
     /// Decode the `bits` of the value
     pub fn unbits(&self, env: &Uiua) -> UiuaResult<Array<f64>> {
         match self {
-            #[cfg(feature = "bytes")]
             Value::Byte(n) => n.inverse_bits(env),
             Value::Num(n) => n.convert_ref_with(|n| n as u8).inverse_bits(env),
             _ => Err(env.error("Argument to inverse_bits must be an array of naturals")),
@@ -935,7 +929,6 @@ impl Value {
                         .map(Array::scalar)
                         .map_err(|e| env.error(format!("Cannot take first of an empty array{e}")))
                 }
-                #[cfg(feature = "bytes")]
                 Value::Byte(bytes) => {
                     for (i, n) in bytes.data.iter().enumerate() {
                         if *n != 0 {
@@ -972,7 +965,6 @@ impl Value {
                         .map(Array::scalar)
                         .map_err(|e| env.error(format!("Cannot take first of an empty array{e}")))
                 }
-                #[cfg(feature = "bytes")]
                 Value::Byte(bytes) => {
                     for (i, n) in bytes.data.iter().enumerate() {
                         if *n != 0 {
@@ -1208,7 +1200,6 @@ impl Value {
     pub(crate) fn primes(&self, env: &Uiua) -> UiuaResult<Array<f64>> {
         match self {
             Value::Num(n) => n.primes(env),
-            #[cfg(feature = "bytes")]
             Value::Byte(b) => b.convert_ref::<f64>().primes(env),
             value => Err(env.error(format!("Cannot get primes of {} array", value.type_name()))),
         }
@@ -1219,9 +1210,15 @@ impl Array<f64> {
     pub(crate) fn primes(&self, env: &Uiua) -> UiuaResult<Array<f64>> {
         let mut primes: Vec<Vec<u64>> = Vec::new();
         for &n in &self.data {
-            if n.fract() != 0.0 || n <= 0.0 {
+            if n <= 0.0 {
                 return Err(env.error(format!(
                     "Cannot get primes of non-positive number {}",
+                    n.grid_string(true)
+                )));
+            }
+            if n.fract() != 0.0 {
+                return Err(env.error(format!(
+                    "Cannot get primes of non-integer number {}",
                     n.grid_string(true)
                 )));
             }

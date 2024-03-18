@@ -151,14 +151,7 @@
     "args": 2,
     "outputs": 1,
     "class": "Tcp",
-    "description": "Make an HTTP request"
-  },
-  "&i": {
-    "args": 2,
-    "outputs": 1,
-    "class": "Filesystem",
-    "description": "Import an item from a file",
-    "deprecated": true
+    "description": "Make an HTTP(S) request"
   },
   "&imd": {
     "args": 1,
@@ -476,7 +469,8 @@
     "args": 2,
     "outputs": 1,
     "class": "Misc",
-    "description": "Randomly reorder the rows of an array with a seed"
+    "description": "Randomly reorder the rows of an array with a seed",
+    "deprecated": true
   },
   "deduplicate": {
     "glyph": "◴",
@@ -760,8 +754,7 @@
     "args": 2,
     "outputs": 1,
     "class": "DyadicArray",
-    "description": "Mask the occurences of one array in another",
-    "experimental": true
+    "description": "Mask the occurences of one array in another"
   },
   "match": {
     "glyph": "≍",
@@ -1228,7 +1221,7 @@
     "outputs": 1,
     "modifier_args": 2,
     "class": "InversionModifier",
-    "description": "Apply a function under another"
+    "description": "Operate on a transformed array, then reverse the transformation"
   },
   "unique": {
     "glyph": "◰",

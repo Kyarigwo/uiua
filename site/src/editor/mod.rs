@@ -209,6 +209,22 @@ pub fn Editor<'a>(
             code_text.clone()
         };
 
+        // Update title
+        if let EditorMode::Pad = mode {
+            let title = if let Some(line) = (input.lines())
+                .find(|line| line.starts_with('#') && !line.starts_with("# Experimental!"))
+            {
+                line[1..].trim()
+            } else if let Some(line) = (input.lines())
+                .find(|line| !line.trim().is_empty() && !line.starts_with("# Experimental!"))
+            {
+                line.trim()
+            } else {
+                "Pad"
+            };
+            (window().document().unwrap()).set_title(&format!("Uiua - {title}"));
+        }
+
         // Update URL
         {
             let encoded = url_encode_code(&clean_code());
@@ -258,6 +274,12 @@ pub fn Editor<'a>(
                 } else {
                     view!(<div><audio class="output-audio" controls src=src/></div>).into_view()
                 }
+            }
+            OutputItem::Svg(s) => {
+                view!(<div><img 
+                    class="output-image" 
+                    src={format!("data:image/svg+xml;utf8, {}", urlencoding::encode(&s))}/>
+                </div>).into_view()
             }
             OutputItem::Report(report) => report_view(&report).into_view(),
             OutputItem::Separator => view!(<div class="output-item"><hr/></div>).into_view(),
@@ -832,6 +854,13 @@ pub fn Editor<'a>(
             "functions#inline-functions",
         ),
         ("⟨⟩", "switch", "", Some(('⟨', '⟩')), "controlflow#switch"),
+        (
+            "‿",
+            "function strand",
+            "strand-span experimental-glyph-button",
+            None,
+            "",
+        ),
         ("¯", "negative (`)", "number-literal", None, ""),
         (
             "@",
@@ -1308,7 +1337,7 @@ pub fn Editor<'a>(
                                 { move || diag_output.get() }
                             </div>
                             <div class="output-wrapper">
-                                <div class="output sized-code">
+                                <div id=format!("output-{id}") class="output sized-code">
                                     { move || output.get() }
                                     {state().challenge.as_ref().map(|chal| {
                                         let intended = chal.intended_answer.clone();

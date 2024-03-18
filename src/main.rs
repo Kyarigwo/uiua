@@ -21,8 +21,8 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use uiua::{
     format::{format_file, format_str, FormatConfig, FormatConfigSource},
     lsp::BindingDocsKind,
-    spans, Assembly, Compiler, NativeSys, PrimClass, RunMode, SpanKind, Uiua, UiuaError,
-    UiuaResult, Value,
+    Assembly, Compiler, NativeSys, PrimClass, RunMode, SpanKind, Uiua, UiuaError, UiuaResult,
+    Value,
 };
 
 fn main() {
@@ -198,6 +198,7 @@ fn run() -> UiuaResult {
             App::Test {
                 path,
                 formatter_options,
+                args,
             } => {
                 let path = if let Some(path) = path {
                     path
@@ -213,7 +214,9 @@ fn run() -> UiuaResult {
                 let config =
                     FormatConfig::from_source(formatter_options.format_config_source, Some(&path))?;
                 format_file(&path, &config, false)?;
-                let mut rt = Uiua::with_native_sys();
+                let mut rt = Uiua::with_native_sys()
+                    .with_file_path(&path)
+                    .with_args(args);
                 rt.compile_run(|comp| {
                     comp.mode(RunMode::Test)
                         .print_diagnostics(true)
@@ -574,7 +577,7 @@ enum App {
         #[cfg(feature = "audio")]
         #[clap(flatten)]
         audio_options: AudioOptions,
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, help = "Arguments to pass to the program")]
         args: Vec<String>,
     },
     #[clap(about = "Build an assembly (the .uasm format is currently unstable)")]
@@ -591,7 +594,7 @@ enum App {
         #[cfg(feature = "audio")]
         #[clap(flatten)]
         audio_options: AudioOptions,
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, help = "Arguments to pass to the program")]
         args: Vec<String>,
     },
     #[clap(about = "Format and test a file")]
@@ -599,6 +602,8 @@ enum App {
         path: Option<PathBuf>,
         #[clap(flatten)]
         formatter_options: FormatterOptions,
+        #[clap(trailing_var_arg = true, help = "Arguments to pass to the program")]
+        args: Vec<String>,
     },
     #[clap(about = "Run .ua files in the current directory when they change")]
     Watch {
@@ -612,7 +617,7 @@ enum App {
         clear: bool,
         #[clap(long, help = "Read stdin from file")]
         stdin_file: Option<PathBuf>,
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, help = "Arguments to pass to the program")]
         args: Vec<String>,
     },
     #[clap(about = "Format a Uiua file or all files in the current directory")]
@@ -626,7 +631,7 @@ enum App {
     Lsp,
     #[clap(about = "Run the Uiua interpreter in a REPL")]
     Repl {
-        #[clap(short = 'f', long, help = "A Uiua file to run before the REPL starts")]
+        #[clap(help = "A Uiua file to run before the REPL starts")]
         file: Option<PathBuf>,
         #[clap(flatten)]
         formatter_options: FormatterOptions,
@@ -779,9 +784,6 @@ fn update(main: bool, check: bool) {
     if cfg!(feature = "audio") {
         features.push("audio");
     }
-    if cfg!(feature = "bytes") {
-        features.push("bytes");
-    }
     let feature_str;
     if !features.is_empty() {
         args.push("--features");
@@ -837,9 +839,9 @@ fn print_stack(stack: &[Value], color: bool) {
     }
 }
 
-fn repl(mut rt: Uiua, mut compiler: Compiler, color: bool, config: FormatConfig) {
+fn repl(mut env: Uiua, mut compiler: Compiler, color: bool, config: FormatConfig) {
     let mut line_reader = DefaultEditor::new().expect("Failed to read from Stdin");
-    let mut repl = |rt: &mut Uiua| -> Result<bool, UiuaError> {
+    let mut repl = || -> Result<bool, UiuaError> {
         let mut code = match line_reader.readline("» ") {
             Ok(code) => code,
             Err(ReadlineError::Eof | ReadlineError::Interrupted) => return Ok(false),
@@ -861,14 +863,13 @@ fn repl(mut rt: Uiua, mut compiler: Compiler, color: bool, config: FormatConfig)
         }
 
         print!("↪ ");
-        println!("{}", color_code(&code));
-
         let backup = compiler.clone();
-        let res = compiler
-            .load_str(&code)
-            .and_then(|comp| rt.run_asm(comp.finish()));
-        print_stack(&rt.take_stack(), color);
-        let mut asm = rt.take_asm();
+        let res = compiler.load_str(&code).map(drop);
+        println!("{}", color_code(&code, &compiler));
+        let res = res.and_then(|()| env.run_asm(compiler.finish()));
+
+        print_stack(&env.take_stack(), color);
+        let mut asm = env.take_asm();
         match res {
             Ok(()) => {
                 asm.remove_top_level();
@@ -884,7 +885,7 @@ fn repl(mut rt: Uiua, mut compiler: Compiler, color: bool, config: FormatConfig)
 
     println!("Uiua {} (end with ctrl+C)\n", env!("CARGO_PKG_VERSION"));
     loop {
-        match repl(&mut rt) {
+        match repl() {
             Ok(true) => {}
             Ok(false) => break,
             Err(e) => {
@@ -894,9 +895,9 @@ fn repl(mut rt: Uiua, mut compiler: Compiler, color: bool, config: FormatConfig)
     }
 }
 
-fn color_code(code: &str) -> String {
+fn color_code(code: &str, compiler: &Compiler) -> String {
     let mut colored = String::new();
-    let (spans, inputs) = spans(code);
+    let (spans, inputs) = uiua::lsp::spans_with_compiler(code, compiler);
 
     let noadic = (237, 94, 106);
     let monadic = (149, 209, 106);
@@ -941,7 +942,7 @@ fn color_code(code: &str) -> String {
             },
             SpanKind::String => (32, 249, 252),
             SpanKind::Number => (255, 136, 68),
-            SpanKind::Comment => (127, 127, 127),
+            SpanKind::Comment | SpanKind::OutputComment => (127, 127, 127),
             SpanKind::Strand => (200, 200, 200),
             SpanKind::Ident(None)
             | SpanKind::Label

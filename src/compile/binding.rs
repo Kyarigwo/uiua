@@ -14,15 +14,11 @@ impl Compiler {
             }) {
                 if let Ok((path_locals, local)) = self.ref_local(r) {
                     self.validate_local(&r.name.value, local, &r.name.span);
-                    self.code_meta
-                        .global_references
-                        .insert(binding.name.clone(), local.index);
+                    (self.code_meta.global_references).insert(binding.name.clone(), local.index);
                     for (local, comp) in path_locals.into_iter().zip(&r.path) {
                         (self.code_meta.global_references).insert(comp.module.clone(), local.index);
                     }
-                    self.code_meta
-                        .global_references
-                        .insert(r.name.clone(), local.index);
+                    (self.code_meta.global_references).insert(r.name.clone(), local.index);
                     self.scope.names.insert(
                         binding.name.value,
                         LocalName {
@@ -104,10 +100,14 @@ impl Compiler {
                     ),
                 );
             }
-            let func = self.add_function(FunctionId::Named(name.clone()), sig, instrs);
+            let function = self.add_function(FunctionId::Named(name.clone()), sig, instrs);
             self.scope.names.insert(name.clone(), local);
             (self.asm).add_global_at(local, Global::Macro, Some(span.clone()), comment.clone());
-            self.array_macros.insert(local.index, func);
+            let mac = ArrayMacro {
+                function,
+                names: self.scope.names.clone(),
+            };
+            self.array_macros.insert(local.index, mac);
             return Ok(());
         }
         // Stack macro
@@ -138,7 +138,33 @@ impl Compiler {
             self.scope.names.insert(name.clone(), local);
             self.asm
                 .add_global_at(local, Global::Macro, Some(span.clone()), comment.clone());
-            self.stack_macros.insert(local.index, binding.words.clone());
+            let mut words = binding.words.clone();
+            recurse_words(&mut words, &mut |word| match &word.value {
+                Word::Ref(r) => {
+                    if let Ok((path_locals, local)) = self.ref_local(r) {
+                        self.validate_local(&r.name.value, local, &r.name.span);
+                        (self.code_meta.global_references).insert(r.name.clone(), local.index);
+                        for (local, comp) in path_locals.into_iter().zip(&r.path) {
+                            (self.code_meta.global_references)
+                                .insert(comp.module.clone(), local.index);
+                        }
+                    }
+                }
+                Word::IncompleteRef { path, in_macro_arg } => {
+                    if let Ok(Some((_, path_locals))) = self.ref_path(path, *in_macro_arg) {
+                        for (local, comp) in path_locals.into_iter().zip(path) {
+                            (self.code_meta.global_references)
+                                .insert(comp.module.clone(), local.index);
+                        }
+                    }
+                }
+                _ => {}
+            });
+            let mac = StackMacro {
+                words,
+                names: self.scope.names.clone(),
+            };
+            self.stack_macros.insert(local.index, mac);
             return Ok(());
         }
 
@@ -204,81 +230,9 @@ impl Compiler {
             });
         }
 
-        // Check if binding is an import
-        let mut is_import = false;
-        let mut sig = None;
-        if let [init @ .., Instr::Prim(Primitive::Sys(SysOp::Import), _)] = instrs.as_slice() {
-            is_import = true;
-            match init {
-                [Instr::Push(path)] => {
-                    if let Some(sig) = &binding.signature {
-                        self.add_error(
-                            sig.span.clone(),
-                            "Cannot declare a signature for a module import",
-                        );
-                    }
-                    match path {
-                        Value::Char(arr) if arr.rank() == 1 => {
-                            let path: String = arr.data.iter().copied().collect();
-                            let module = self.import_module(path.as_ref(), span)?;
-                            self.asm.add_global_at(
-                                local,
-                                Global::Module(module),
-                                Some(binding.name.span.clone()),
-                                comment.clone(),
-                            );
-                            self.scope.names.insert(name.clone(), local);
-                        }
-                        _ => self.add_error(span.clone(), "Import path must be a string"),
-                    }
-                }
-                [Instr::Push(item), Instr::Push(path)] => match path {
-                    Value::Char(arr) if arr.rank() == 1 => {
-                        let path: String = arr.data.iter().copied().collect();
-                        let module = self.import_module(path.as_ref(), span)?;
-                        match item {
-                            Value::Char(arr) if arr.rank() == 1 => {
-                                let item: String = arr.data.iter().copied().collect();
-                                if let Some(&local) = self.imports[&module].names.get(item.as_str())
-                                {
-                                    self.validate_local(&item, local, span);
-                                    self.scope.names.insert(
-                                        name.clone(),
-                                        LocalName {
-                                            index: local.index,
-                                            public,
-                                        },
-                                    );
-                                    if let Some(s) =
-                                        self.asm.bindings[local.index].global.signature()
-                                    {
-                                        sig = Some(s);
-                                    } else {
-                                        self.add_error(
-                                            span.clone(),
-                                            "Cannot define a signature for a module rebind",
-                                        )
-                                    }
-                                } else {
-                                    self.add_error(
-                                        span.clone(),
-                                        format!("Item `{item}` not found in module `{path}`"),
-                                    )
-                                }
-                            }
-                            _ => self.add_error(span.clone(), "Import item must be a string"),
-                        };
-                    }
-                    _ => self.add_error(span.clone(), "Import path must be a string"),
-                },
-                _ => self.add_error(span.clone(), "&i must be followed by one or two strings"),
-            }
-        }
-
         // Resolve signature
         match instrs_signature(&instrs) {
-            Ok(s) => {
-                let mut sig = sig.unwrap_or(s);
+            Ok(mut sig) => {
                 // Validate signature
                 if let Some(declared_sig) = &binding.signature {
                     let sig_to_check = if let [Instr::PushFunc(f)] = instrs.as_slice() {
@@ -311,8 +265,7 @@ impl Compiler {
                     instrs.as_slice(),
                     [Instr::PushFunc(_), Instr::PushFunc(_), Instr::PushFunc(_), Instr::Prim(Primitive::SetUnder, _)]
                 );
-                if is_import {
-                } else if let [Instr::PushFunc(f)] = instrs.as_slice() {
+                if let [Instr::PushFunc(f)] = instrs.as_slice() {
                     // Binding is a single inline function
                     sig = f.signature();
                     let func = make_fn(f.instrs(self).into(), f.signature(), self);
@@ -406,8 +359,7 @@ impl Compiler {
                 );
             }
             Err(e) => {
-                if is_import {
-                } else if let Some(sig) = binding.signature {
+                if let Some(sig) = binding.signature {
                     // Binding is a normal function
                     instrs.insert(0, Instr::NoInline);
                     let func = make_fn(instrs, sig.value, self);
@@ -435,10 +387,10 @@ impl Compiler {
         prev_com: Option<Arc<str>>,
     ) -> UiuaResult {
         // Import module
-        let module = self.import_module(&import.path.value, &import.path.span)?;
+        let module_path = self.import_module(&import.path.value, &import.path.span)?;
         // Bind name
         if let Some(name) = &import.name {
-            let imported = self.imports.get(&module).unwrap();
+            let imported = self.imports.get(&module_path).unwrap();
             let global_index = self.next_global;
             self.next_global += 1;
             let local = LocalName {
@@ -447,7 +399,7 @@ impl Compiler {
             };
             self.asm.add_global_at(
                 local,
-                Global::Module(module.clone()),
+                Global::Module(module_path.clone()),
                 Some(name.span.clone()),
                 prev_com.or_else(|| imported.comment.clone()),
             );
@@ -457,7 +409,7 @@ impl Compiler {
         for item in import.items() {
             if let Some(local) = self
                 .imports
-                .get(&module)
+                .get(&module_path)
                 .and_then(|i| i.names.get(item.value.as_str()))
                 .copied()
             {
@@ -473,7 +425,11 @@ impl Compiler {
             } else {
                 self.add_error(
                     item.span.clone(),
-                    format!("`{}` not found in module {}", item.value, module.display()),
+                    format!(
+                        "`{}` not found in module {}",
+                        item.value,
+                        module_path.display()
+                    ),
                 );
             }
         }

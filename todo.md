@@ -1,14 +1,12 @@
 # Uiua Todo
 
 - 0.10
-  - Planet expressions?
   - Proofread and update tutorial and tour
   - System functions
     - Excel
-- Site pages/tutorials
-  - Working with strings
-  - Style and readability
-  - `repeat` as conditional
+- 0.11
+  - Pattern matching
+  - Full HTTPS support
 - Multimedia
   - Sound input
   - Webcam input

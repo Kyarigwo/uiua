@@ -175,6 +175,7 @@ impl fmt::Display for ImplPrimitive {
             UndoTake => write!(f, "{Under}{Take}"),
             UndoDrop => write!(f, "{Under}{Drop}"),
             UnDrop => write!(f, "{Un}{Drop}"),
+            UnKeep => write!(f, "{Un}{Keep}"),
             UndoSelect => write!(f, "{Under}{Select}"),
             UndoPick => write!(f, "{Under}{Pick}"),
             UndoInsert => write!(f, "{Under}{Insert}"),
@@ -331,33 +332,30 @@ impl Primitive {
         FormatPrimitive(*self)
     }
     pub(crate) fn deprecation_suggestion(&self) -> Option<String> {
+        use Primitive::*;
         match self {
-            Primitive::Cross => Some(format!("use {} instead", Primitive::Table.format())),
-            Primitive::Cascade => Some(format!(
-                "use {} or {} instead",
-                Primitive::Fork.format(),
-                Primitive::On.format()
-            )),
-            Primitive::Rectify => Some(String::new()),
-            Primitive::All => Some(String::new()),
-            Primitive::This | Primitive::Recur => {
-                Some("use the name of a binding to recur instead".into())
-            }
-            Primitive::Sys(SysOp::Import) => Some("use new ~ syntax instead".into()),
-            Primitive::Sys(SysOp::GifDecode) => Some(format!(
+            Cross => Some(format!("use {} instead", Table.format())),
+            Cascade => Some(format!("use {} or {} instead", Fork.format(), On.format())),
+            Rectify => Some(String::new()),
+            All => Some(String::new()),
+            This | Recur => Some("use the name of a binding to recur instead".into()),
+            Sys(SysOp::GifDecode) => Some(format!(
                 "use {} {} instead",
-                Primitive::Un.format(),
-                Primitive::Sys(SysOp::GifEncode).format()
+                Un.format(),
+                Sys(SysOp::GifEncode).format()
             )),
-            Primitive::Sys(SysOp::AudioDecode) => Some(format!(
+            Sys(SysOp::AudioDecode) => Some(format!(
                 "use {} {} instead",
-                Primitive::Un.format(),
-                Primitive::Sys(SysOp::AudioEncode).format()
+                Un.format(),
+                Sys(SysOp::AudioEncode).format()
             )),
-            Primitive::Sys(SysOp::ImDecode) => Some(format!(
+            Sys(SysOp::ImDecode) => Some(format!(
                 "use {} {} instead",
-                Primitive::Un.format(),
-                Primitive::Sys(SysOp::ImEncode).format()
+                Un.format(),
+                Sys(SysOp::ImEncode).format()
+            )),
+            Deal => Some(format!(
+                "use {Select}{Rise}[{Pop}{Repeat}{Gen}]{Len}{Over} instead"
             )),
             _ => None,
         }
@@ -368,7 +366,7 @@ impl Primitive {
         use Primitive::*;
         matches!(
             self,
-            (Mask | Coordinate)
+            Coordinate
                 | (This | Recur)
                 | (Rectify | All | Cascade | By)
                 | (Map | Insert | Has | Get | Remove)
@@ -394,7 +392,6 @@ impl Primitive {
             "id" => return Some(Primitive::Identity),
             "ga" => return Some(Primitive::Gap),
             "po" => return Some(Primitive::Pop),
-            "of" => return Some(Primitive::By),
             "pi" => return Some(Primitive::Pi),
             "ran" => return Some(Primitive::Range),
             "tra" => return Some(Primitive::Transpose),
@@ -402,6 +399,9 @@ impl Primitive {
             _ => {}
         }
         if let Some(prim) = Primitive::non_deprecated().find(|p| p.name() == name) {
+            return Some(prim);
+        }
+        if let Some(prim) = Primitive::all().find(|p| p.glyph().is_none() && p.name() == name) {
             return Some(prim);
         }
         if let Some(prim) = SysOp::ALL.iter().find(|s| s.name() == name) {
@@ -559,7 +559,7 @@ impl Primitive {
             Primitive::Windows => env.dyadic_rr_env(Value::windows)?,
             Primitive::Where => env.monadic_ref_env(Value::wher)?,
             Primitive::Classify => env.monadic_ref(Value::classify)?,
-            Primitive::Deduplicate => env.monadic_mut(Value::deduplicate)?,
+            Primitive::Deduplicate => env.monadic_mut_env(Value::deduplicate)?,
             Primitive::Unique => env.monadic_ref(Value::unique)?,
             Primitive::Member => env.dyadic_rr_env(Value::member)?,
             Primitive::Find => env.dyadic_rr_env(Value::find)?,
@@ -816,9 +816,9 @@ impl Primitive {
             }
             Primitive::Map => {
                 let keys = env.pop("keys")?;
-                let vals = env.pop("values")?;
-                let map = keys.map(vals, env)?;
-                env.push(map);
+                let mut vals = env.pop("values")?;
+                vals.map(keys, env)?;
+                env.push(vals);
             }
             Primitive::Shapes => shapes(env)?,
             Primitive::Types => types(env)?,
@@ -883,6 +883,7 @@ impl ImplPrimitive {
                 env.push(vals);
                 env.push(keys);
             }
+            ImplPrimitive::UnKeep => env.dyadic_ro_env(Value::unkeep)?,
             ImplPrimitive::UndoPick => {
                 let index = env.pop(1)?;
                 let into = env.pop(2)?;
@@ -955,7 +956,9 @@ impl ImplPrimitive {
                 env.push(im);
             }
             ImplPrimitive::UnParse => env.monadic_ref_env(Value::unparse)?,
-            ImplPrimitive::UnFix => env.monadic_mut(Value::unfix)?,
+            ImplPrimitive::UnFix => env.monadic_mut(|val| {
+                val.unfix();
+            })?,
             ImplPrimitive::UnScan => reduce::unscan(env)?,
             ImplPrimitive::UnTrace => trace(env, true)?,
             ImplPrimitive::BothTrace => both_trace(env, false)?,

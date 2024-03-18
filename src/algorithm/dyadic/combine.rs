@@ -4,7 +4,6 @@ use std::{cmp::Ordering, mem::take};
 
 use ecow::EcoVec;
 
-#[cfg(feature = "bytes")]
 use crate::algorithm::op2_bytes_retry_fill;
 use crate::{
     algorithm::{max_shape, FillContext},
@@ -103,7 +102,6 @@ impl Value {
     pub(crate) fn join_impl<C: FillContext>(self, other: Self, ctx: &C) -> Result<Self, C::Error> {
         Ok(match (self, other) {
             (Value::Num(a), Value::Num(b)) => a.join_impl(b, ctx)?.into(),
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Byte(b)) => op2_bytes_retry_fill::<_, C>(
                 a,
                 b,
@@ -113,15 +111,11 @@ impl Value {
             )?,
             (Value::Complex(a), Value::Complex(b)) => a.join_impl(b, ctx)?.into(),
             (Value::Char(a), Value::Char(b)) => a.join_impl(b, ctx)?.into(),
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Num(b)) => a.convert().join_impl(b, ctx)?.into(),
-            #[cfg(feature = "bytes")]
             (Value::Num(a), Value::Byte(b)) => a.join_impl(b.convert(), ctx)?.into(),
             (Value::Complex(a), Value::Num(b)) => a.join_impl(b.convert(), ctx)?.into(),
             (Value::Num(a), Value::Complex(b)) => a.convert().join_impl(b, ctx)?.into(),
-            #[cfg(feature = "bytes")]
             (Value::Complex(a), Value::Byte(b)) => a.join_impl(b.convert(), ctx)?.into(),
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Complex(b)) => a.convert().join_impl(b, ctx)?.into(),
             (a, b) => a.bin_coerce_to_boxes(
                 b,
@@ -134,7 +128,6 @@ impl Value {
     pub(crate) fn append<C: FillContext>(&mut self, other: Self, ctx: &C) -> Result<(), C::Error> {
         match (&mut *self, other) {
             (Value::Num(a), Value::Num(b)) => a.append(b, ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Byte(b)) => {
                 *self = op2_bytes_retry_fill::<_, C>(
                     a.clone(),
@@ -152,13 +145,11 @@ impl Value {
             }
             (Value::Complex(a), Value::Complex(b)) => a.append(b, ctx)?,
             (Value::Char(a), Value::Char(b)) => a.append(b, ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Num(b)) => {
                 let mut a = a.convert_ref();
                 a.append(b, ctx)?;
                 *self = a.into();
             }
-            #[cfg(feature = "bytes")]
             (Value::Num(a), Value::Byte(b)) => a.append(b.convert(), ctx)?,
             (Value::Complex(a), Value::Num(b)) => a.append(b.convert(), ctx)?,
             (Value::Num(a), Value::Complex(b)) => {
@@ -166,9 +157,7 @@ impl Value {
                 a.append(b, ctx)?;
                 *self = a.into();
             }
-            #[cfg(feature = "bytes")]
             (Value::Complex(a), Value::Byte(b)) => a.append(b.convert(), ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Complex(b)) => {
                 let mut a = a.convert_ref();
                 a.append(b, ctx)?;
@@ -195,7 +184,6 @@ impl Value {
             Value::Num(a) => a
                 .undo_join(&a_shape, &b_shape, env)
                 .map(|(a, b)| (a.into(), b.into())),
-            #[cfg(feature = "bytes")]
             Value::Byte(a) => a
                 .undo_join(&a_shape, &b_shape, env)
                 .map(|(a, b)| (a.into(), b.into())),
@@ -270,10 +258,13 @@ impl<T: ArrayValue> Array<T> {
                         other.shape
                     }
                 };
-                self.data.extend(other.data);
-                self.shape = target_shape;
-                self.shape[0] += 1;
-                self
+                let rot_len = self.data.len();
+                other.data.extend(self.data);
+                other.data.as_mut_slice().rotate_right(rot_len);
+                other.shape = target_shape;
+                other.shape[0] += 1;
+                other.meta = self.meta;
+                other
             }
             Ordering::Greater => {
                 if other.shape() == 0 {
@@ -317,8 +308,19 @@ impl<T: ArrayValue> Array<T> {
                             }
                         }
                     }
-                    self.data.extend(other.data);
-                    self.shape[0] += other.shape[0];
+
+                    if self.data.len() >= other.data.len() {
+                        self.data.extend(other.data);
+                        self.shape[0] += other.shape[0];
+                    } else {
+                        let rot_len = self.data.len();
+                        other.data.extend(self.data);
+                        other.data.as_mut_slice().rotate_right(rot_len);
+                        other.shape[0] += self.shape[0];
+                        other.meta = self.meta;
+                        self = other;
+                    }
+
                     self.take_label();
                     if let Some((mut a, b)) = map_keys {
                         let mut to_remove = a.join(b, ctx)?;
@@ -479,7 +481,6 @@ impl Value {
     ) -> Result<(), C::Error> {
         match (&mut *self, other) {
             (Value::Num(a), Value::Num(b)) => a.couple_impl(b, ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Byte(b)) => {
                 *self = op2_bytes_retry_fill::<_, C>(
                     a.clone(),
@@ -498,9 +499,7 @@ impl Value {
             (Value::Complex(a), Value::Complex(b)) => a.couple_impl(b, ctx)?,
             (Value::Char(a), Value::Char(b)) => a.couple_impl(b, ctx)?,
             (Value::Box(a), Value::Box(b)) => a.couple_impl(b, ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Num(a), Value::Byte(b)) => a.couple_impl(b.convert(), ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Num(b)) => {
                 let mut a = a.convert_ref();
                 a.couple_impl(b, ctx)?;
@@ -512,9 +511,7 @@ impl Value {
                 a.couple_impl(b, ctx)?;
                 *self = a.into();
             }
-            #[cfg(feature = "bytes")]
             (Value::Complex(a), Value::Byte(b)) => a.couple_impl(b.convert(), ctx)?,
-            #[cfg(feature = "bytes")]
             (Value::Byte(a), Value::Complex(b)) => {
                 let mut a = a.convert_ref();
                 a.couple_impl(b, ctx)?;
@@ -533,7 +530,6 @@ impl Value {
     pub fn uncouple(self, env: &Uiua) -> UiuaResult<(Self, Self)> {
         match self {
             Value::Num(a) => a.uncouple(env).map(|(a, b)| (a.into(), b.into())),
-            #[cfg(feature = "bytes")]
             Value::Byte(a) => a.uncouple(env).map(|(a, b)| (a.into(), b.into())),
             Value::Complex(a) => a.uncouple(env).map(|(a, b)| (a.into(), b.into())),
             Value::Char(a) => a.uncouple(env).map(|(a, b)| (a.into(), b.into())),

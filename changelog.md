@@ -12,6 +12,11 @@ This version is not yet released. If you are reading this on the website, then t
   - This makes them easier to identify when reading
   - It also allows switch functions to be used as modifier arguments without extra nesting
 - Switch functions now work with [`under ⍜`](https://uiua.org/docs/under)
+- Git modules are no longer experimental
+  - Modules are added automatically as Git submodules when imported
+  - See the [Modules](https://uiua.org/tutorial/modules#git-modules) tutorial for more information
+- Add the [`mask ⦷`](https://uiua.org/docs/mask) function, which creates a mask of occurrences of one array in another
+  - This works similarly to [`find ⌕`](https://uiua.org/docs/find), but is better when you need a mask or to distinguish between adjacent occurrences
 - Change [`sine ∿`](https://uiua.org/docs/sine)'s glyph
   - `∿` is more representative of what it does
   - Most circle glyphs like `○` are used for array functions or stack manipulation
@@ -19,14 +24,13 @@ This version is not yet released. If you are reading this on the website, then t
 - [`under ⍜`](https://uiua.org/docs/under) [`join ⊂`](https://uiua.org/docs/join) now works with arrays of the same rank as long as the row count does not change
 - [`un °`](https://uiua.org/docs/un) [`scan \\`](https://uiua.org/docs/scan) now works with [`equals =`](https://uiua.org/docs/equals) and [`not equals ≠`](https://www.uiua.org/docs/not%20equals)
 - [`group ⊕`](https://uiua.org/docs/group) can now take multidimensional index arrays
-- [`group ⊕`](https://uiua.org/docs/group)'s indices can now have an extra number at the end to specify the number of groups to make
 - [`partition ⊜`](https://uiua.org/docs/partition) can now take multidimensional marker arrays
-- [`under ⍜`](https://uiua.org/docs/under) [`select ⊏`](https://uiua.org/docs/select) and [`pick ⊐`](https://uiua.org/docs/pick) now work with duplicate indices if the values at those indices are the same
+- [`under ⍜`](https://uiua.org/docs/under) [`select ⊏`](https://uiua.org/docs/select) and [`pick ⊡`](https://uiua.org/docs/pick) now work with duplicate indices if the values at those indices are the same
 - [`rotate ↻`](https://uiua.org/docs/rotate) now works through boxes
 - [`fold ∧`](https://uiua.org/docs/fold) now works with [`under ⍜`](https://uiua.org/docs/under) if its function does
 - [`inventory ⍚`](https://uiua.org/docs/inventory) can now take 3 or more arrays
 - [`repeat ⍥`](https://uiua.org/docs/repeat) can now take non-scalar repetition counts
-  - This repeats the function a different numbers on rows of the inputs
+  - This repeats the function a different number of times for each row of the inputs
 - [`drop ↘`](https://uiua.org/docs/drop) can now be used with [`un °`](https://uiua.org/docs/un) if a [`fill ⬚`](https://uiua.org/docs/fill) is set
 - Characters can now be [`multiply ×`](https://uiua.org/docs/multiply)d or [`divide ÷`](https://uiua.org/docs/divide)d by numbers to possibly toggle their case
 - Add the [`csv`](https://uiua.org/docs/csv) function, which encodes and decodes CSV data
@@ -36,40 +40,54 @@ This version is not yet released. If you are reading this on the website, then t
 - Doc comments may now be placed at the end of single-line functions
 - Non-alphabetic identifiers can now be suffixed with `!` to make macros
 - Add `df`, `ddf`, etc shortcuts for [`dip ⊙`](https://uiua.org/docs/dip) [`fix ¤`](https://uiua.org/docs/fix)
-- Add the experimental [`mask ⦷`](https://uiua.org/docs/mask) function, which creates a mask of occurrences of one array in another
-  - This works similarly to [`find ⌕`](https://uiua.org/docs/find), but is better when you need a mask or to distinguish between adjacent occurrences
+- Existing macros are now called "stack macros" to distinguish them from the new "array macros"
+  - Stack macros are now [hygienic](https://en.wikipedia.org/wiki/Hygienic_macro)
+- Add experimental array macros, which allow code to be generated and manipulated at compile time as strings
+  - These are specified with a `^` immediately following a binding's arrow
 - Add the experimental [`coordinate ⟔`](https://uiua.org/docs/coordinate) function, which searches an array for a value and returns a multidimensional index
   - [`coordinate ⟔`](https://uiua.org/docs/coordinate) is to [`pick ⊡`](https://uiua.org/docs/pick) as [`indexof ⊗`](https://uiua.org/docs/indexof) is to [`select ⊏`](https://uiua.org/docs/select)
 - Experimental function strands now use the `‿` character, which formats from `__`
-- Add experimental array macros, which allow code to be generated and manipulated at compile time as strings
-  - These are specified with a `^` immediately following a binding's arrow
 - Add the experimental [`by ⊸`](https://uiua.org/docs/by) modifier, which duplicates a function's last argument before calling it
 - Add the experimental [`quote`](https://uiua.org/docs/quote) modifier, which converts a string to code at compile time
   - This is useful in array macros
 - Add `# No inline!` semantic comment, which prevents a function and its callers from being inlined
-  - This enables stack traces on errors
+  - This enables better stack traces on errors
+- Deprecate [`deal`](https://uiua.org/docs/deal)
+  - It is rarely used and easy to express with other functions
 - Remove `unpack ⊐` for good
+- Remove `&i` for good
 ### Interpreter
 - Code is now analyzed for purity
   - All pure top-level expressions will attempt to evaluate at compile time
   - All fragments of code that are pure and have a signature `|0.n` will be evaluated at compile time
 - Add lots of LSP features
   - Find references
-  - Signature inlay hints (can be toggled/adjusted in settings)
-  - Value inlay hints (can be toggled in settings)
-  - Macro expansion as a code action
+  - Rename is now cross-file
   - On-type formatting (can be toggled in settings)
-  - Completions for shadowable constants
-  - Completions for module items when the module reference is partially typed
+  - Inlay hints (each can be toggled in settings)
+    - Binding function signatures
+    - Inline function signatures
+    - Values of top-level expressions
+  - Code actions
+    - Macro expansion
+    - Remove output comment
+    - Convert between strand and array syntax
+  - Completions
+    - Shadowable constants
+    - Module items when the module reference is partially typed
 - Add the `--file <file>` option to the `uiua repl` command
   - This runs a file before starting the REPL
 - Improve the supported binding type coverage of [`&ffi`](https://uiua.org/docs/&ffi)
+- Various performance improvements
 - Lots of bug and crash fixes
 ### Website
+- Add a [Working with Strings](https://uiua.org/tutorial/strings) tutorial
 - Hide experimental glyphs in the editor by default
   - They can be toggled on in the settings
 - An `# Experimental!` comment can now be easily inserted via a settings button or with `Ctrl+E`
 - Add horizontal scrolling to pad output
+- Pad tabs are now given titles according to their contents
+- The pad now renders strings that are SVG as images
 
 ## 0.9.5 - 2024-02-28
 ### Interpreter

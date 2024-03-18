@@ -46,6 +46,7 @@ impl Default for WebBackend {
 
 pub enum OutputItem {
     String(String),
+    Svg(String),
     Image(Vec<u8>),
     Gif(Vec<u8>),
     Audio(Vec<u8>),
@@ -192,7 +193,10 @@ impl SysBackend for WebBackend {
         while (instant::now() - start) / 1000.0 < seconds {}
         Ok(())
     }
-    fn load_git_module(&self, url: &str) -> Result<PathBuf, String> {
+    fn load_git_module(&self, url: &str, branch: Option<&str>) -> Result<PathBuf, String> {
+        if branch.is_some() {
+            return Err("Git branch specification is not supported in the web backend".into());
+        }
         let mut parts = url.rsplitn(3, '/');
         let repo_name = parts.next().ok_or("Invalid git url")?;
         let repo_owner = parts.next().ok_or("Invalid git url")?;
@@ -230,8 +234,6 @@ struct FetchReq {
     src: String,
     resouce: Resource<(), Result<String, String>>,
 }
-
-// M ~ "git: https://github.com/uiua-lang/example_module"
 
 pub fn try_fetch_sync(src: &str) -> Option<Result<String, String>> {
     REQ.with(|req| {

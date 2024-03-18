@@ -18,7 +18,6 @@ pub fn repeat(env: &mut Uiua) -> UiuaResult {
     let n = env.pop("repetition count")?;
     let n = match n {
         Value::Num(n) => n,
-        #[cfg(feature = "bytes")]
         Value::Byte(n) => n.convert(),
         val => {
             return Err(env.error(format!(
@@ -183,7 +182,6 @@ impl Value {
     fn partition_groups(self, markers: Array<isize>, env: &Uiua) -> UiuaResult<Vec<Self>> {
         Ok(match self {
             Value::Num(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
-            #[cfg(feature = "bytes")]
             Value::Byte(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
             Value::Complex(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
             Value::Char(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
@@ -435,7 +433,6 @@ impl Value {
     fn group_groups(self, indices: Array<isize>, env: &Uiua) -> UiuaResult<Vec<Self>> {
         Ok(match self {
             Value::Num(arr) => arr.group_groups(indices, env)?.map(Into::into).collect(),
-            #[cfg(feature = "bytes")]
             Value::Byte(arr) => arr.group_groups(indices, env)?.map(Into::into).collect(),
             Value::Complex(arr) => arr.group_groups(indices, env)?.map(Into::into).collect(),
             Value::Char(arr) => arr.group_groups(indices, env)?.map(Into::into).collect(),
@@ -447,19 +444,9 @@ impl Value {
 impl<T: ArrayValue> Array<T> {
     fn group_groups(
         self,
-        mut indices: Array<isize>,
+        indices: Array<isize>,
         env: &Uiua,
     ) -> UiuaResult<impl Iterator<Item = Self>> {
-        let mut target_groups = None;
-        if indices.rank() == 1 && indices.row_count() == self.row_count() + 1 {
-            let last = *indices.data.last().unwrap();
-            if last < 0 {
-                return Err(env.error("Cannot make a negative number of groups"));
-            }
-            target_groups = Some(last.unsigned_abs());
-            indices.data.modify(|data| data.pop());
-            indices.shape[0] -= 1;
-        }
         if !self.shape().starts_with(indices.shape()) {
             return Err(env.error(format!(
                 "Cannot {} array of shape {} with indices of shape {}",
@@ -468,20 +455,16 @@ impl<T: ArrayValue> Array<T> {
                 indices.shape()
             )));
         }
-        let target_groups = if let Some(target_groups) = target_groups {
-            target_groups
-        } else {
-            let Some(&max_index) = indices.data.iter().max() else {
-                return Ok(Vec::<Vec<Self>>::new()
-                    .into_iter()
-                    .map(Array::from_row_arrays_infallible));
-            };
-            max_index.max(0) as usize + 1
+        let Some(&max_index) = indices.data.iter().max() else {
+            return Ok(Vec::<Vec<Self>>::new()
+                .into_iter()
+                .map(Array::from_row_arrays_infallible));
         };
-        let mut groups: Vec<Vec<Self>> = vec![Vec::new(); target_groups];
+        let group_count = max_index.max(0) as usize + 1;
+        let mut groups: Vec<Vec<Self>> = vec![Vec::new(); group_count];
         let row_shape = self.shape()[indices.rank()..].into();
         for (g, r) in (indices.data.into_iter()).zip(self.into_row_shaped_slices(row_shape)) {
-            if g >= 0 && g < target_groups as isize {
+            if g >= 0 && g < group_count as isize {
                 groups[g as usize].push(r);
             }
         }
@@ -521,14 +504,13 @@ pub fn undo_group_part2(env: &mut Uiua) -> UiuaResult {
         .as_integer_array(env, "⊕ group indices must be an array of integers")?;
     let original = env.pop(3)?;
 
-    if (indices.data.iter())
-        .any(|&index| index >= 0 && index as usize >= ungrouped_rows.row_count())
-    {
+    let expected_count = (indices.data.iter().max().copied().unwrap_or(-1) + 1).max(0);
+    if ungrouped_rows.row_count() as isize != expected_count {
         return Err(env.error(format!(
             "Cannot undo {} because the grouped array's \
             length changed from {} to {}",
             Primitive::Group.format(),
-            indices.element_count(),
+            expected_count,
             ungrouped_rows.row_count(),
         )));
     }
@@ -539,20 +521,26 @@ pub fn undo_group_part2(env: &mut Uiua) -> UiuaResult {
         .map(|row| row.unboxed().into_rows())
         .collect();
     let mut ungrouped = Vec::with_capacity(indices.element_count() * original.row_len());
+    let depth = indices.rank().saturating_sub(1);
     for (i, &index) in indices.data.iter().enumerate() {
+        let original_row = original.depth_row(depth, i);
         if index >= 0 {
             ungrouped.push(ungrouped_rows[index as usize].next().ok_or_else(|| {
                 env.error("A group's length was modified between grouping and ungrouping")
             })?);
         } else {
-            ungrouped.push(original.row(i));
+            ungrouped.push(original_row);
         }
+    }
+    if ungrouped_rows.iter_mut().any(|row| row.next().is_some()) {
+        return Err(env.error("A group's length was modified between grouping and ungrouping"));
     }
     let mut val = Value::from_row_values(ungrouped, env)?;
     val.shape_mut().remove(0);
     for &dim in indices.shape().iter().rev() {
         val.shape_mut().insert(0, dim);
     }
+    val.validate_shape();
     env.push(val);
     Ok(())
 }

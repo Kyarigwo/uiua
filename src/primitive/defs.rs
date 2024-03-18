@@ -253,12 +253,9 @@ primitive!(
     ///   : +1⇌
     ///
     /// [duplicate] is often combined with [flip] to process a single value two different ways.
-    /// For example, to find the average value of an array, we [divide] its sum(`reduce``add`) by its [length].
-    /// ex: ÷⧻:/+. [4 0 1 2]
-    /// Or, maybe you want to find all the numbers in an array that lie within a certain range.
+    /// For example, maybe you want to find all the numbers in an array that lie within a certain range.
     /// Here, we use [multiply] as a logical AND function.
     /// ex: ×≥5:≤8. [6 2 5 9 6 5 0 4]
-    /// This is a very common pattern.
     ///
     /// [duplicate] can be used to make a monadic left-hook, such as in this palindrome checker:
     /// ex: ≍⇌. "friend"
@@ -282,10 +279,7 @@ primitive!(
     /// This is a very common pattern.
     /// For example, maybe you want to find all the uppercase letters in a string.
     /// ex: $ Characters On uppercase OnLy
-    ///   : ▽×≥@A:≤@Z..
-    /// Or maybe you want to calculate the averge of a list of numbers.
-    /// Here, we get the [length] and the `reduce``add``sum` of the list, then [divide] them.
-    /// ex: ÷⧻:/+. 1_8_2_5
+    ///   : ▽ ×≥@A:≤@Z. .
     (2(2), Flip, Stack, ("flip", ':')),
     /// Discard the top stack value
     ///
@@ -695,6 +689,9 @@ primitive!(
     /// [transpose] works through boxes.
     /// ex: ⍉ □[1_2_3 4_5_6]
     /// ex: ≡⍉ {[1_2 3_4] [1_2_3 4_5_6]}
+    /// [un][transpose] transposes in the opposite direction.
+    /// This is useful for arrays with rank `greater than``2`.
+    /// ex: °⍉ .⊟.[1_2_3 4_5_6]
     ///
     /// `shape``transpose` is always equivalent to `rotate``1``shape`.
     /// ex: [1_2 3_4 5_6]
@@ -859,6 +856,9 @@ primitive!(
     /// [un][parse] on a non-scalar number array will [box] each string.
     /// ex: °⋕ 1_2_3
     /// ex: °⋕ ↯3_4⇡12
+    ///
+    /// [fill][parse] sets a default value for failed parses.
+    /// ex: ⬚5⋕ {"13" "124" "not a number"}
     (1, Parse, Misc, ("parse", '⋕')),
     /// Check if two arrays are exactly the same
     ///
@@ -872,19 +872,16 @@ primitive!(
     /// For scalars, it is equivalent to [join].
     /// ex: ⊟ 1 2
     ///   : ⊂ 1 2
-    ///
     /// For arrays, a new array is created with the first array as the first row and the second array as the second row.
     /// ex: ⊟ [1 2 3] [4 5 6]
+    /// [un][couple] uncouples a [length] `2` array and pushes both rows onto the stack.
+    /// ex: °⊟ .[1_2_3 4_5_6]
+    /// ex: °⊟ [1_2 3_4]
     ///
     /// By default, arrays with different shapes cannot be [couple]d.
     /// ex! ⊟ [1 2 3] [4 5]
     /// Use [fill] to make their shapes match
     /// ex: ⬚∞⊟ [1 2 3] [4 5]
-    ///
-    /// [couple] is compatible with [un] and [under].
-    /// ex: °⊟ [10 20]
-    /// ex: °⊟ [1_2 3_4]
-    /// ex: ⍜⊟(×2) 3 5 # Works, but maybe use ∩ both in this case
     (2, Couple, DyadicArray, ("couple", '⊟')),
     /// Append two arrays end-to-end
     ///
@@ -910,6 +907,8 @@ primitive!(
     /// [un][join] splits the first row of the array from the rest.
     /// ex: °⊂ [1 2 3 4]
     /// ex: °⊂ [1_2 3_4 5_6]
+    ///
+    /// [join]ing to the front of an array is a bit slower than [join]ing to the back because it requires all the existing rows to be shifted.
     ///
     /// [join]'s glyph is `⊂` because it kind of looks like a magnet pulling its two arguments together.
     (2, Join, DyadicArray, ("join", '⊂')),
@@ -1122,21 +1121,20 @@ primitive!(
     ///
     /// Occurences of the first array in the second array will be marked with increasing numbers.
     /// While [find] only marks the start of each occurence, [mask] marks the entire occurence.
-    /// ex: # Experimental!
-    ///   : ⦷ "ab" "abracadabra"
-    /// ex: # Experimental!
-    ///   : ⦷ [1 2 3].[0 1 2 3 1 2 3 4 5 1 2 3 4 5 6]
+    /// ex: ⦷ "ab" "abracadabra"
+    /// ex: ⦷ [1 2 3].[0 1 2 3 1 2 3 4 5 1 2 3 4 5 6]
     /// Increasing numbers are used so that adjacent occurences can be distinguished.
     /// An occurence that would overlap with a previous occurence is not marked.
-    /// ex: # Experimental!
-    ///   : ⦷ [3 4 3 4].[0 3 4 3 4 3 4 0 0 3 4 3 4 0]
+    /// ex: ⦷ [3 4 3 4].[0 3 4 3 4 3 4 0 0 3 4 3 4 0]
     ///
     /// Arbitrary rank arrays are supported.
     /// The first array's rank must be `less or equal` the rank of the second.
-    /// ex: # Experimental!
-    ///   : ⦷,, 3_4 ↯2_3⇡6
-    /// ex: # Experimental!
-    ///   : ⦷,, [1_2 5_6] [1_2_3_4 5_6_1_2 7_8_5_6 4_3_1_2]
+    /// ex: ⦷,, 3_4 ↯2_3⇡6
+    /// ex: ⦷,, [1_2 5_6] [1_2_3_4 5_6_1_2 7_8_5_6 4_3_1_2]
+    ///
+    /// [mask] works well with [partition] in a way that [find] does not.
+    /// Here, we [not] the [mask] of a non-scalar delimiter to split a string.
+    /// ex: ⊜∘ ¬⦷" - ". "foo - bar - baz"
     (2, Mask, DyadicArray, ("mask", '⦷')),
     /// Check if each row of one array exists in another
     ///
@@ -1392,6 +1390,10 @@ primitive!(
     /// ex: ⍥/◇⊂∞ {1 {2 3} {4 {5 6 {7}}}}
     /// The number of repetitions may be non-scalar. In this case, the function will be repeated each row of the input a different number of times.
     /// ex: ⍥(×2) [1 2 3 4] [5 5 5 5]
+    /// If you want to conditionally either run some function or not, you can use [repeat] to repeat `0` or `1` times.
+    /// ex: F ← ⍥(×10)<10.
+    ///   : F 5
+    ///   : F 12
     ///
     /// [repeat]'s glyph is a combination of a circle, representing a loop, and the 𝄇 symbol from musical notation.
     ([1], Repeat, IteratingModifier, ("repeat", '⍥')),
@@ -1424,12 +1426,6 @@ primitive!(
     /// The length of each group must not change.
     /// ex! ⍜⊕□⇌ ≠@ . $ These are some words
     ///
-    /// The indices array may have one extra element than the second array.
-    /// This value sets the number of buckets to use.
-    /// Here, the default behavior would generate 7 buckets, but we set it to 5 and 10 instead.
-    /// ex: ⌊÷10.[7 46 19 8 23 5 42 72 7 36 4 18 37]
-    /// ∩(⊕□ ⊂:) ? ⊃(10⊙∘|5⊙∘)
-    ///
     /// [group] is closely related to [partition].
     (2[1], Group, AggregatingModifier, ("group", '⊕')),
     /// Group sequential sections of an array
@@ -1438,8 +1434,8 @@ primitive!(
     ///
     /// Takes a function and two arrays.
     /// The arrays must be the same [length].
-    /// The first array must be rank `1` and contain integers.
-    /// Consecutive rows in the second array that line up with groups of the same key in the first array will be grouped together.
+    /// The first array is called the "markers". It must be rank `1` and contain integers.
+    /// Consecutive rows in the second array that line up with groups of the same key in the markers will be grouped together.
     /// Keys `less or equal``0` will be omitted.
     /// The function then processes each group in order. The result depends on what the function is.
     /// If the function takes 0 or 1 arguments, then [partition] behaves like [rows]. This is called *iterating* [partition].
@@ -1457,6 +1453,12 @@ primitive!(
     /// ex: $ 1 1 2 3
     ///   : $ 5 8 13 21
     ///   : ⊜(⊜⋕≠@ .)≠@\n.
+    ///
+    /// [partition] also works with multidimensional markers. Groups are formed from markers that are adjacent along any axis.
+    /// Each group will be flattened before being passed to the function.
+    /// ex: ⊜□.. ↯4_4 [0 1 1 2 2]
+    /// If we wanted to group the indices that are adjacent, we could use the array to [partition] its own indices.
+    /// ex: ⊜□:⇡△.. ↯4_4 [0 1 1 2 2]
     ///
     /// [under][partition] works if [partition]'s function is [under]able.
     /// ex: ⍜⊜□⇌  ≠@ . $ These are some words
@@ -1539,12 +1541,12 @@ primitive!(
     ([1], On, Stack, ("on", '⟜')),
     /// Duplicate a function's last argument before calling it
     ///
-    /// If you wanted to filter out every element of an array that is not [less than] 10, you could use [keep].
+    /// If you want to filter out every element of an array that is not [less than] 10, you can use [keep].
     /// ex: ▽<10. [1 27 8 3 14 9]
-    /// However, if you wanted to make this a function, you would have to [dip] below the bound to [duplicate] the array.
+    /// However, if you want to make this a function, you have to [dip] below the first arguement to [duplicate] the array.
     /// ex: F ← ▽<⊙.
     ///   : F 10 [1 27 8 3 14 9]
-    /// While this works, it may be take a moment to process in your mind how the stack is changing.
+    /// While this works, it may take a moment to process in your mind how the stack is changing.
     /// [by] expresses the common pattern of performing an operation but preserving the last argument so that it can be used again.
     /// With [by], the filtering function above can be written more simply.
     /// ex: # Experimental!
@@ -1604,35 +1606,13 @@ primitive!(
     ([1], Bind, OtherModifier, ("bind", 'λ')),
     /// Invert the behavior of a function
     ///
+    /// ex: °√ 5
+    /// Two functions that are invertible alone can be inverted together
+    /// ex: °(+1√) 5
     /// Most functions are not invertible.
-    ///
-    /// ex: √2
-    /// ex: °√2
-    ///
-    /// [un][couple] uncouples a [length]`2` array and pushes both rows onto the stack.
-    /// ex: °⊟ .[1_2_3 4_5_6]
-    ///
-    /// [un][transpose] transposes in the opposite direction.
-    /// This is useful for arrays with rank `greater than``2`.
-    /// ex: °⍉ .⊟.[1_2_3 4_5_6]
-    ///
-    /// [un][bits] converts an array of bits into a number.
-    /// ex: °⋯ [1 0 1 0 1 0 1 0]
-    ///
-    /// [un][sine] gives the arcsine.
-    /// ex: °∿ 1
-    ///
-    /// [un] can be used with stack array notation and [dip] and [identity] to unpack the items of an array onto the stack.
-    /// ex: [⊙⊙∘] 1 2 3
-    /// ex: °[⊙⊙∘] [1 2 3]
-    ///
-    /// `un``reduce``multiply` finds the prime factors of a number. It also works with arrays, filling in the shape with `1`s.
-    /// ex: °/× 42
-    /// ex: °/× +1⇡10
-    ///
-    /// While more inverses exists, most of them are not useful on their own.
-    /// [under] also uses inverses, but is more powerful.
-    /// A function's inverse can be set with [setinv].
+    /// [under] also uses inverses, but expresses a different pattern and is generally more powerful.
+    /// A function's [un]-inverse can be set with [setinv].
+    /// For more about inverses, see the [Inverse Tutorial](/tutorial/inverses).
     ([1], Un, InversionModifier, ("un", '°')),
     /// Set a function as its own inverse
     ///
@@ -1692,13 +1672,13 @@ primitive!(
     ///
     /// Inverses set with [setund] cannot be used with [un]. For simpler inverse defining, see [setinv].
     ([3], SetUnder, InversionModifier, "setund"),
-    /// Apply a function under another
+    /// Operate on a transformed array, then reverse the transformation
     ///
     /// This is a more powerful version of [un].
     /// Conceptually, [under] transforms a value, modifies it, then reverses the transformation.
     ///
-    /// [under] takes 2 functions `f` and `g` and another argument `x`.
-    /// It applies `f` to `x`, then applies `g` to the result.
+    /// [under] takes 2 functions `f` and `g` and some other arguments `xs`.
+    /// It applies `f` to `xs`, then applies `g` to the result.
     /// It then applies the inverse of `f` to the result of `g`.
     ///
     /// Any function that can be [un]ed can be used with [under].
@@ -1706,37 +1686,11 @@ primitive!(
     ///
     /// Here, we [negate] 5, [subtract] 2, then [negate] again.
     /// ex: ⍜¯(-2) 5
-    /// You can use [under] with [round] to round to a specific number of decimal places.
-    /// ex: ⍜(×1e3)⁅ π
+    /// You can use [under][multiply][round] to round to a specific number of decimal places.
+    /// ex: ⍜×⁅ 1e3 π
     ///
-    /// The above examples involve an *arithmetic* under. That is, [un]`f` is well-definined independent of [under]'s concept of "undoing".
-    /// The remaining examples below involve `f`s which cannot be normally [un]ed, but which are valid as functions to use with [under].
-    ///
-    /// [under][deshape] will [reshape] the array after `g` finishes.
-    /// ex: ⍜♭⇌ .↯3_4⇡12
-    /// If you want to insert a value somewhere in the middle of an array, you can use [under], [rotate], and [join].
-    /// ex: ⍜(↻3)(⊂π) 1_2_3_4_5
-    /// You can use [under][first] to apply a function to the first row of an array.
-    /// ex: ⍜⊢(×10) 1_2_3_4_5
-    /// If you need to work on more of the array's rows, can use [under] with [take] or [drop].
-    /// ex: ⍜(↙3)(×10) 1_2_3_4_5
-    /// ex: ⍜(↘3)(×10) 1_2_3_4_5
-    /// You can chain [under]-compatible functions.
-    /// ex: ⍜(↙2↘1)(×10) 1_2_3_4_5
-    /// [pick] and [select] also work.
-    /// ex: ⍜⊡(×10) 2_1 ↯3_3⇡9
-    /// ex: ⍜⊏(×10) 1_3 1_2_3_4_5
-    /// Although, [under][select] with duplicate indices only works if the mapping is unambiguous.
-    /// ex: ⍜⊏(×10)    1_3_3 1_2_3_4_5
-    /// ex! ⍜⊏(+1_2_3) 1_3_3 1_2_3_4_5
-    /// [under][keep] works as long as the counts list is boolean.
-    /// ex: ⍜▽(×10) =0◿3.⇡10
-    ///
-    /// If `g` takes more than 1 argument, keep in mind that `f` will be called on the stack as it is when the full under expression begins.
-    /// This means you may have to flip the arguments to `g`.
-    /// Consider this equivalence:
-    /// ex: ⍜(↙2)(÷:)  [1 2 3 4 5] 10
-    ///   : ⍜(↙2)(÷10) [1 2 3 4 5]
+    /// In general, if two functions are compatible with [under] separately, then they are compatible together.
+    /// ex: ⍜(↙⊙↘|×10) 2 1 [1 2 3 4 5]
     ///
     /// [under][both] works, and whether [both] is applied when undoing depends on the signature of `g`.
     /// For example, this hypotenuse function does not use [both] when undoing because its `g` (`add`) returns a single value.
@@ -1744,9 +1698,9 @@ primitive!(
     /// However, this function whose `g` returns *2* values *does* use [both] when undoing, in this case re-[box]ing the outputs.
     /// ex: ⍜∩°□(⊂⊢,) □[1 2 3] □[4 5 6 7 8]
     ///
-    /// [under] works with [&fo], [&fc], [&tcpa], and [&tcpc]. It calls [&cl] when `g` is done.
-    ///
     /// [setund] can be used to define a function's [under] behavior.
+    ///
+    /// For more about [under] and inverses, see the [Inverse Tutorial](/tutorial/inverses).
     ([2], Under, InversionModifier, ("under", '⍜')),
     /// Call two functions on the same values
     ///
@@ -2184,12 +2138,16 @@ primitive!(
     /// - [join]
     /// - [each]
     /// - [rows]
-    /// These operations do *not* work on maps:
-    /// - [fix]
-    /// - [transpose]
-    /// - [deshape]
-    /// - [rerank]
-    /// - [reshape]
+    /// - [classify]
+    /// - [deduplicate]
+    /// Operations that do not specifically work on maps will remove the keys and turn the map into a normal array.
+    ///
+    /// [fix]ing a map will [fix] the keys and values. This exposes the true structure of the keys array.
+    /// ex: # Experimental!
+    ///   : ¤ map 1_2_3 4_5_6
+    /// This is usually only useful with [rows].
+    /// ex: # Experimental!
+    ///   : ≡get [1 3 3 2] ¤ map 1_2_3 4_5_6
     ///
     /// Regardless of the size of the map, operations on it have O(1) amortized time complexity.
     /// In this example, we time [get] and [insert] operations on maps from 10 entries up to 100,000 entries.
@@ -2537,6 +2495,7 @@ impl_primitive!(
     (1(2), UnJoin),
     (2, UnDrop),
     (1, UnCsv),
+    (2, UnKeep),
     // Unders
     (3, UndoSelect),
     (3, UndoPick),

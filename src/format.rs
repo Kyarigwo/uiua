@@ -16,13 +16,11 @@ use paste::paste;
 
 use crate::{
     ast::*,
-    function::Signature,
     grid_fmt::GridFmt,
     lex::{is_ident_char, CodeSpan, Loc, Sp},
     parse::{parse, split_words, trim_spaces, unsplit_words},
-    value::Value,
-    Compiler, FunctionId, Ident, InputSrc, Inputs, Primitive, RunMode, SafeSys, SysBackend, SysOp,
-    Uiua, UiuaError, UiuaResult,
+    Compiler, FunctionId, Ident, InputSrc, Inputs, RunMode, SafeSys, Signature, SysBackend, Uiua,
+    UiuaError, UiuaResult, Value,
 };
 
 trait ConfigValue: Sized {
@@ -594,14 +592,6 @@ impl<'a> Formatter<'a> {
             }
             Item::Binding(binding) => {
                 match binding.words.first().map(|w| &w.value) {
-                    Some(Word::Primitive(Primitive::Sys(SysOp::Import)))
-                        if (binding.words.iter())
-                            .filter(|word| word.value.is_code())
-                            .count()
-                            == 2 =>
-                    {
-                        self.prev_import_function = Some(binding.name.value.clone());
-                    }
                     Some(Word::Ref(r)) => {
                         if r.root_module()
                             .zip(self.prev_import_function.as_ref())
@@ -757,8 +747,8 @@ impl<'a> Formatter<'a> {
         depth: usize,
         angle_switch: bool,
     ) {
-        for word in trim_spaces(words, trim_end) {
-            self.format_word(word, depth, angle_switch);
+        for (i, word) in trim_spaces(words, trim_end).iter().enumerate() {
+            self.format_word(word, depth, angle_switch || i > 0);
         }
     }
     fn format_word(&mut self, word: &Sp<Word>, depth: usize, angle_switch: bool) {
@@ -806,10 +796,20 @@ impl<'a> Formatter<'a> {
                 .output
                 .push_str(&self.inputs.get(&word.span.src)[word.span.byte_range()]),
             Word::MultilineString(s) => {
+                let curr_line_pos = if self.output.ends_with('\n') {
+                    0
+                } else {
+                    self.output
+                        .split('\n')
+                        .last()
+                        .unwrap_or_default()
+                        .chars()
+                        .count()
+                };
                 for (i, line) in s.lines().enumerate() {
                     if i > 0 {
                         self.output.push('\n');
-                        for _ in 0..self.config.multiline_indent * depth {
+                        for _ in 0..curr_line_pos {
                             self.output.push(' ');
                         }
                     }
@@ -854,7 +854,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.format_ref(r);
             }
-            Word::IncompleteRef(path) => {
+            Word::IncompleteRef { path, .. } => {
                 if (self.output.chars().rev())
                     .take_while(|&c| is_ident_char(c))
                     .any(|c| c.is_uppercase())
@@ -1202,11 +1202,17 @@ impl<'a> Formatter<'a> {
         let values = self.output_comments.get_or_insert_with(|| {
             let mut env = Uiua::with_backend(self.config.backend.clone())
                 .with_execution_limit(Duration::from_secs(2));
+
+            #[cfg(feature = "native_sys")]
+            let enabled = crate::sys_native::set_output_enabled(false);
             let res = env.compile_run(|comp| {
                 comp.print_diagnostics(true)
                     .mode(RunMode::All)
                     .load_str_src(&self.inputs.get(&self.src), self.src.clone())
             });
+            #[cfg(feature = "native_sys")]
+            crate::sys_native::set_output_enabled(enabled);
+
             let mut values = env.rt.output_comments;
             if let Err(e) = res {
                 let next = (0..).take_while(|i| values.contains_key(i)).count();
@@ -1228,7 +1234,7 @@ fn word_is_multiline(word: &Word) -> bool {
         Word::MultilineString(_) => true,
         Word::MultilineFormatString(_) => true,
         Word::Ref(_) => false,
-        Word::IncompleteRef(_) => false,
+        Word::IncompleteRef { .. } => false,
         Word::Strand(_) => false,
         Word::Undertied(_) => false,
         Word::Array(arr) => {

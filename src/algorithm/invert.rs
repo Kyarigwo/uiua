@@ -36,6 +36,7 @@ fn prim_inverse(prim: Primitive, span: usize) -> Option<Instr> {
         Stack => Instr::ImplPrim(UnStack, span),
         Join => Instr::ImplPrim(UnJoin, span),
         Drop => Instr::ImplPrim(UnDrop, span),
+        Keep => Instr::ImplPrim(UnKeep, span),
         Sys(SysOp::GifDecode) => Instr::Prim(Sys(SysOp::GifEncode), span),
         Sys(SysOp::GifEncode) => Instr::Prim(Sys(SysOp::GifDecode), span),
         Sys(SysOp::AudioDecode) => Instr::Prim(Sys(SysOp::AudioEncode), span),
@@ -71,6 +72,7 @@ fn impl_prim_inverse(prim: ImplPrimitive, span: usize) -> Option<Instr> {
         UnJoin => Instr::Prim(Join, span),
         UnDrop => Instr::Prim(Drop, span),
         UnCsv => Instr::Prim(Csv, span),
+        UnKeep => Instr::Prim(Keep, span),
         BothTrace => Instr::ImplPrim(UnBothTrace, span),
         UnBothTrace => Instr::ImplPrim(BothTrace, span),
         _ => return None,
@@ -203,7 +205,7 @@ pub(crate) fn under_instrs(
     /// Copy 1 value to the temp stack after the "before", and pop it before the "after"
     macro_rules! store1copy {
         ($before:expr, $after:expr) => {
-            pat!($before, ($before, CopyToTempN(1)), (PopTempN(2), $after),)
+            pat!($before, ($before, CopyToTempN(1)), (PopTempN(1), $after),)
         };
     }
 
@@ -318,21 +320,22 @@ pub(crate) fn under_instrs(
             (Over, Shape, Over, Shape, PushTempN(2), Join),
             (PopTempN(2), UndoJoin),
         )),
-        // Array indexing
-        &stash1!(Rise, (Flip, Select)),
-        &stash1!(Fall, (Flip, Select)),
+        // Rise and fall
+        &pat!(
+            Rise,
+            (CopyToTempN(1), Rise, Dup, Rise, PushTempN(1)),
+            (PopTempN(1), Select, PopTempN(1), Flip, Select)
+        ),
+        &pat!(
+            Fall,
+            (CopyToTempN(1), Fall, Dup, Rise, PushTempN(1)),
+            (PopTempN(1), Select, PopTempN(1), Flip, Select)
+        ),
+        // Index of
         &maybe_val!(pat!(
             IndexOf,
             (Over, PushTempN(1), IndexOf),
             (PopTempN(1), Flip, Select)
-        )),
-        // Array masking
-        &stash1!(Unique, (Flip, Keep)),
-        &maybe_val!(stash1!(Member, (Flip, Keep))),
-        &maybe_val!(pat!(
-            Find,
-            (Over, PushTempN(1), Find),
-            (PopTempN(1), Flip, Keep)
         )),
         // Value retrieval
         &stash1!(First, UndoFirst),
@@ -1304,7 +1307,7 @@ fn invert_scan_pattern<'a>(
     let [Instr::PushFunc(f), Instr::Prim(Primitive::Scan, span), input @ ..] = input else {
         return None;
     };
-    let inverse = match f.as_flipped_primitive(comp) {
+    let inverse = match f.as_flipped_primitive(&comp.asm) {
         Some((Primitive::Add, false)) => eco_vec![Instr::Prim(Primitive::Sub, *span)],
         Some((Primitive::Mul, false)) => eco_vec![Instr::Prim(Primitive::Div, *span)],
         Some((Primitive::Eq, false)) => eco_vec![Instr::Prim(Primitive::Eq, *span)],
@@ -1437,7 +1440,7 @@ fn invert_reduce_mul_pattern<'a>(
     let [Instr::PushFunc(f), Instr::Prim(Primitive::Reduce, span), input @ ..] = input else {
         return None;
     };
-    let Some((Primitive::Mul, _)) = f.as_flipped_primitive(comp) else {
+    let Some((Primitive::Mul, _)) = f.as_flipped_primitive(&comp.asm) else {
         return None;
     };
     let instrs = eco_vec![Instr::ImplPrim(ImplPrimitive::Primes, *span)];

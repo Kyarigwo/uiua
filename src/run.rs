@@ -19,7 +19,7 @@ use thread_local::ThreadLocal;
 use crate::{
     algorithm, array::Array, boxed::Boxed, check::instrs_temp_signatures, function::*, lex::Span,
     value::Value, Assembly, Compiler, Complex, Global, Ident, Inputs, IntoSysBackend, LocalName,
-    Primitive, SafeSys, SysBackend, SysOp, TraceFrame, UiuaError, UiuaResult, VERSION,
+    Primitive, SafeSys, SysBackend, TraceFrame, UiuaError, UiuaResult, VERSION,
 };
 
 /// The Uiua interpreter
@@ -413,6 +413,9 @@ code:
             // Uncomment to debug
             // for val in &self.rt.stack {
             //     print!("{:?} ", val);
+            // }
+            // if self.rt.stack.is_empty() {
+            //     print!("(empty) ");
             // }
             // println!();
             // if !self.rt.array_stack.is_empty() {
@@ -842,16 +845,10 @@ code:
     fn call_with_frame_span(&mut self, frame: StackFrame, call_span: usize) -> UiuaResult {
         let start_height = self.rt.stack.len();
         let sig = frame.sig;
-        let slice = frame.slice;
         self.exec(frame)?;
         let height_diff = self.rt.stack.len() as isize - start_height as isize;
         let sig_diff = sig.outputs as isize - sig.args as isize;
-        if height_diff != sig_diff
-            && !self
-                .instrs(slice)
-                .iter()
-                .any(|instr| matches!(instr, Instr::Prim(Primitive::Sys(SysOp::Import), _)))
-        {
+        if height_diff != sig_diff {
             return Err(self.error_with_span(
                 self.asm.spans[call_span].clone(),
                 format!(
@@ -1134,9 +1131,7 @@ code:
         match self.rt.fill_stack.last() {
             Some(Value::Num(n)) if n.rank() == 0 => Ok(n.data[0]),
             Some(Value::Num(_)) => Err(self.fill_error(true)),
-            #[cfg(feature = "bytes")]
             Some(Value::Byte(n)) if n.rank() == 0 => Ok(n.data[0] as f64),
-            #[cfg(feature = "bytes")]
             Some(Value::Byte(_)) => Err(self.fill_error(true)),
             _ => Err(self.fill_error(false)),
         }
@@ -1152,9 +1147,7 @@ code:
             }
             Some(Value::Num(n)) if n.rank() == 0 => Err(self.fill_error(false)),
             Some(Value::Num(_)) => Err(self.fill_error(true)),
-            #[cfg(feature = "bytes")]
             Some(Value::Byte(n)) if n.rank() == 0 => Ok(n.data[0]),
-            #[cfg(feature = "bytes")]
             Some(Value::Byte(_)) => Err(self.fill_error(true)),
             _ => Err(self.fill_error(false)),
         }
@@ -1178,9 +1171,7 @@ code:
         match self.rt.fill_stack.last() {
             Some(Value::Num(n)) if n.rank() == 0 => Ok(Complex::new(n.data[0], 0.0)),
             Some(Value::Num(_)) => Err(self.fill_error(true)),
-            #[cfg(feature = "bytes")]
             Some(Value::Byte(n)) if n.rank() == 0 => Ok(Complex::new(n.data[0] as f64, 0.0)),
-            #[cfg(feature = "bytes")]
             Some(Value::Byte(_)) => Err(self.fill_error(true)),
             Some(Value::Complex(c)) if c.rank() == 0 => Ok(c.data[0]),
             Some(Value::Complex(_)) => Err(self.fill_error(true)),
@@ -1194,7 +1185,6 @@ code:
         if scalar {
             match self.rt.fill_stack.last() {
                 Some(Value::Num(_)) => ". A number fill is set, but is is not a scalar.",
-                #[cfg(feature = "bytes")]
                 Some(Value::Byte(_)) => ". A number fill is set, but is is not a scalar.",
                 Some(Value::Char(_)) => ". A character fill is set, but is is not a scalar.",
                 Some(Value::Complex(_)) => ". A complex fill is set, but is is not a scalar.",
@@ -1204,7 +1194,6 @@ code:
         } else {
             match self.rt.fill_stack.last() {
                 Some(Value::Num(_)) => ". A number fill is set, but the array is not numbers.",
-                #[cfg(feature = "bytes")]
                 Some(Value::Byte(_)) => ". A number fill is set, but the array is not numbers.",
                 Some(Value::Char(_)) => {
                     ". A character fill is set, but the array is not characters."

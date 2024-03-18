@@ -3,7 +3,7 @@
 //! Even without the `lsp` feature enabled, this module still provides some useful types and functions for working with Uiua code in an IDE or text editor.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     slice,
     sync::Arc,
 };
@@ -26,6 +26,7 @@ pub enum SpanKind {
     String,
     Number,
     Comment,
+    OutputComment,
     Strand,
     Ident(Option<BindingDocs>),
     Label,
@@ -76,6 +77,21 @@ pub fn spans(input: &str) -> (Vec<Sp<SpanKind>>, Inputs) {
     spans_with_backend(input, SafeSys::default())
 }
 
+#[doc(hidden)]
+/// Used for coloring code in the REPL
+pub fn spans_with_compiler(input: &str, compiler: &Compiler) -> (Vec<Sp<SpanKind>>, Inputs) {
+    let mut compiler = compiler.clone();
+    let src = InputSrc::Str(compiler.asm.inputs.strings.len().saturating_sub(1));
+    let (items, _, _) = parse(input, src.clone(), &mut compiler.asm.inputs);
+    let spanner = Spanner {
+        asm: compiler.asm,
+        code_meta: compiler.code_meta,
+        errors: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    (spanner.items_spans(&items), spanner.asm.inputs.clone())
+}
+
 /// Get spans and their kinds from Uiua code with a custom backend
 pub fn spans_with_backend(input: &str, backend: impl SysBackend) -> (Vec<Sp<SpanKind>>, Inputs) {
     let src = InputSrc::Str(0);
@@ -85,7 +101,7 @@ pub fn spans_with_backend(input: &str, backend: impl SysBackend) -> (Vec<Sp<Span
 }
 
 /// Metadata for code for use in IDE tools
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CodeMeta {
     /// A map of references to global bindings
     pub global_references: HashMap<Sp<Ident>, usize>,
@@ -99,10 +115,14 @@ pub struct CodeMeta {
     pub incomplete_refs: HashMap<CodeSpan, usize>,
     /// A map of the spans of top-level lines to values
     pub top_level_values: HashMap<CodeSpan, Vec<Value>>,
+    /// A map of strand spans
+    pub strands: BTreeMap<CodeSpan, Vec<CodeSpan>>,
+    /// A map of array spans
+    pub arrays: BTreeMap<CodeSpan, Vec<CodeSpan>>,
 }
 
 /// Data for the signature of a function
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct SigDecl {
     /// The signature itself
     pub sig: Signature,
@@ -230,7 +250,7 @@ impl Spanner {
         if comment.is_none() {
             match &binfo.global {
                 Global::Const(None) => comment = Some("constant".into()),
-                Global::Module { .. } => comment = Some("macro".into()),
+                Global::Module { .. } => comment = Some("module".into()),
                 Global::Macro => comment = Some("macro".into()),
                 _ => {}
             }
@@ -278,7 +298,7 @@ impl Spanner {
                     spans.extend((lines.iter()).map(|line| line.span.clone().sp(SpanKind::String)))
                 }
                 Word::Ref(r) => spans.extend(self.ref_spans(r)),
-                Word::IncompleteRef(path) => spans.extend(self.ref_path_spans(path)),
+                Word::IncompleteRef { path, .. } => spans.extend(self.ref_path_spans(path)),
                 Word::Strand(items) | Word::Undertied(items) => {
                     for i in 0..items.len() {
                         let word = &items[i];
@@ -377,8 +397,11 @@ impl Spanner {
                 Word::Spaces | Word::BreakLine | Word::UnbreakLine => {
                     spans.push(word.span.clone().sp(SpanKind::Whitespace))
                 }
-                Word::Comment(_) | Word::SemanticComment(_) | Word::OutputComment { .. } => {
+                Word::Comment(_) | Word::SemanticComment(_) => {
                     spans.push(word.span.clone().sp(SpanKind::Comment))
+                }
+                Word::OutputComment { .. } => {
+                    spans.push(word.span.clone().sp(SpanKind::OutputComment))
                 }
                 Word::Placeholder(op) => {
                     spans.push(word.span.clone().sp(SpanKind::Placeholder(*op)))
@@ -605,12 +628,9 @@ mod server {
         }
 
         async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-            let doc = if let Some(doc) = self
-                .docs
-                .get(&params.text_document_position_params.text_document.uri)
-            {
-                doc
-            } else {
+            let Some(doc) =
+                (self.docs).get(&params.text_document_position_params.text_document.uri)
+            else {
                 return Ok(None);
             };
             let (line, col) = lsp_pos_to_uiua(params.text_document_position_params.position);
@@ -981,6 +1001,18 @@ mod server {
                 return Ok(None);
             };
 
+            // Check if in a string or comment
+            let (line, col) = lsp_pos_to_uiua(params.text_document_position.position);
+            for span in &doc.spans {
+                if matches!(
+                    span.value,
+                    SpanKind::String | SpanKind::Comment | SpanKind::Label
+                ) && span.span.contains_line_col(line, col)
+                {
+                    return Ok(None);
+                }
+            }
+
             // Get ident
             let pos = params.text_document_position.position;
             let is_newline = params.ch == "\n";
@@ -1064,15 +1096,17 @@ mod server {
                     SpanKind::Number => UIUA_NUMBER_STT,
                     SpanKind::Comment => SemanticTokenType::COMMENT,
                     SpanKind::Primitive(p) => match p.class() {
-                        PrimClass::Stack if p.modifier_args().is_none() => STACK_FUNCTION_STT,
-                        PrimClass::MonadicPervasive | PrimClass::MonadicArray => {
-                            MONADIC_FUNCTION_STT
+                        PrimClass::Stack | PrimClass::Planet if p.modifier_args().is_none() => {
+                            STACK_FUNCTION_STT
                         }
-                        PrimClass::DyadicPervasive | PrimClass::DyadicArray => DYADIC_FUNCTION_STT,
                         _ if p.modifier_args() == Some(1) => MONADIC_MODIFIER_STT,
                         _ if p.modifier_args() == Some(2) => DYADIC_MODIFIER_STT,
                         _ if p.modifier_args() == Some(3) => TRIADIC_MODIFIER_STT,
                         _ if p.args() == Some(0) => NOADIC_FUNCTION_STT,
+                        _ if p.args() == Some(1) => MONADIC_FUNCTION_STT,
+                        _ if p.args() == Some(2) => DYADIC_FUNCTION_STT,
+                        _ if p.args() == Some(3) => TRIADIC_FUNCTION_STT,
+                        _ if p.args() == Some(4) => TETRADIC_FUNCTION_STT,
                         _ => continue,
                     },
                     SpanKind::Ident(Some(docs)) => match docs.kind {
@@ -1130,15 +1164,27 @@ mod server {
                 return Ok(None);
             };
             let (line, col) = lsp_pos_to_uiua(params.range.start);
+            let path = uri_path(&params.text_document.uri);
             let mut actions = Vec::new();
 
             // Add explicit signature
             for (span, inline) in &doc.code_meta.function_sigs {
-                if inline.explicit || !span.contains_line_col(line, col) {
+                if inline.explicit || !span.contains_line_col(line, col) || span.src != path {
                     continue;
                 }
                 let mut insertion_span = span.just_start(&doc.asm.inputs);
-                insertion_span.start = insertion_span.end;
+                if span.as_str(&doc.asm.inputs, |s| s.starts_with('(')) {
+                    if span.start.line as usize == line && span.start.col as usize == col {
+                        // Binding with single inline function
+                        insertion_span.end = insertion_span.start;
+                    } else {
+                        // Inline function
+                        insertion_span.start = insertion_span.end;
+                    }
+                } else {
+                    // Binding without single inline function
+                    insertion_span.end = insertion_span.start;
+                }
                 actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                     title: "Add explicit signature".into(),
                     kind: Some(CodeActionKind::QUICKFIX),
@@ -1166,7 +1212,7 @@ mod server {
 
             // Expand macro
             for (span, (name, expanded)) in &doc.code_meta.macro_expansions {
-                if !span.contains_line_col(line, col) {
+                if !span.contains_line_col(line, col) || span.src != path {
                     continue;
                 }
                 actions.push(CodeActionOrCommand::CodeAction(CodeAction {
@@ -1189,6 +1235,98 @@ mod server {
                 }));
             }
 
+            // Remove output comment
+            for span in &doc.spans {
+                if !span.span.contains_line_col(line, col) || span.span.src != path {
+                    continue;
+                }
+                if let SpanKind::OutputComment = &span.value {
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: "Remove output comment".into(),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(
+                                [(
+                                    params.text_document.uri.clone(),
+                                    vec![TextEdit {
+                                        range: uiua_span_to_lsp(&span.span),
+                                        new_text: "".into(),
+                                    }],
+                                )]
+                                .into(),
+                            ),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }));
+                }
+            }
+
+            // Convert to array syntax
+            for (span, parts) in &doc.code_meta.strands {
+                if !span.contains_line_col(line, col) || span.src != path {
+                    continue;
+                }
+                let mut new_text = "[".to_string();
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        new_text.push(' ');
+                    }
+                    part.as_str(&doc.asm.inputs, |s| new_text.push_str(s));
+                }
+                new_text.push(']');
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Convert to array syntax".into(),
+                    kind: Some(CodeActionKind::REFACTOR_REWRITE),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(
+                            [(
+                                params.text_document.uri.clone(),
+                                vec![TextEdit {
+                                    range: uiua_span_to_lsp(span),
+                                    new_text,
+                                }],
+                            )]
+                            .into(),
+                        ),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+
+            // Convert to strand syntax
+            for (span, parts) in &doc.code_meta.arrays {
+                if !span.contains_line_col(line, col) || span.src != path {
+                    continue;
+                }
+                let mut new_text = String::new();
+                for (i, part) in parts.iter().enumerate() {
+                    if i > 0 {
+                        new_text.push('_');
+                    }
+                    part.as_str(&doc.asm.inputs, |s| new_text.push_str(s));
+                }
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Convert to strand syntax".into(),
+                    kind: Some(CodeActionKind::REFACTOR_REWRITE),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(
+                            [(
+                                params.text_document.uri.clone(),
+                                vec![TextEdit {
+                                    range: uiua_span_to_lsp(span),
+                                    new_text,
+                                }],
+                            )]
+                            .into(),
+                        ),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+
             Ok(if actions.is_empty() {
                 None
             } else {
@@ -1197,20 +1335,16 @@ mod server {
         }
 
         async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
-            let doc = if let Some(doc) = self
-                .docs
-                .get(&params.text_document_position.text_document.uri)
-            {
-                doc
-            } else {
+            let Some(doc) = (self.docs).get(&params.text_document_position.text_document.uri)
+            else {
                 return Ok(None);
             };
-            let position = params.text_document_position.position;
-            let (line, col) = lsp_pos_to_uiua(position);
+            let (line, col) = lsp_pos_to_uiua(params.text_document_position.position);
+            let path = uri_path(&params.text_document_position.text_document.uri);
             let mut binding: Option<(&BindingInfo, usize)> = None;
             // Check for span in bindings
             for (i, gb) in doc.asm.bindings.iter().enumerate() {
-                if gb.span.contains_line_col(line, col) {
+                if gb.span.contains_line_col(line, col) && gb.span.src == path {
                     binding = Some((gb, i));
                     break;
                 }
@@ -1218,7 +1352,7 @@ mod server {
             // Check for span in binding references
             if binding.is_none() {
                 for (name, index) in &doc.code_meta.global_references {
-                    if name.span.contains_line_col(line, col) {
+                    if name.span.contains_line_col(line, col) && name.span.src == path {
                         binding = Some((&doc.asm.bindings[*index], *index));
                         break;
                     }
@@ -1228,20 +1362,37 @@ mod server {
                 return Ok(None);
             };
             // Collect edits
-            let mut edits = vec![TextEdit {
-                range: uiua_span_to_lsp(&binding.span),
-                new_text: params.new_name.clone(),
-            }];
-            for (name, idx) in &doc.code_meta.global_references {
-                if *idx == index {
-                    edits.push(TextEdit {
-                        range: uiua_span_to_lsp(&name.span),
-                        new_text: params.new_name.clone(),
-                    });
+            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+            changes.insert(
+                match &binding.span.src {
+                    InputSrc::Str(_) | InputSrc::Macro(_) => {
+                        params.text_document_position.text_document.uri.clone()
+                    }
+                    InputSrc::File(file) => path_to_uri(file)?,
+                },
+                vec![TextEdit {
+                    range: uiua_span_to_lsp(&binding.span),
+                    new_text: params.new_name.clone(),
+                }],
+            );
+            for entry in &self.docs {
+                let uri = entry.key();
+                let doc = entry.value();
+                for (name, idx) in &doc.code_meta.global_references {
+                    if *idx == index {
+                        let uri = match &name.span.src {
+                            InputSrc::Str(_) | InputSrc::Macro(_) => uri.clone(),
+                            InputSrc::File(file) => path_to_uri(file)?,
+                        };
+                        changes.entry(uri).or_default().push(TextEdit {
+                            range: uiua_span_to_lsp(&name.span),
+                            new_text: params.new_name.clone(),
+                        });
+                    }
                 }
             }
             Ok(Some(WorkspaceEdit {
-                changes: Some([(params.text_document_position.text_document.uri, edits)].into()),
+                changes: Some(changes.clone()),
                 document_changes: None,
                 change_annotations: None,
             }))
@@ -1251,19 +1402,17 @@ mod server {
             &self,
             params: GotoDefinitionParams,
         ) -> Result<Option<GotoDefinitionResponse>> {
-            let current_doc = if let Some(doc) = self
-                .docs
-                .get(&params.text_document_position_params.text_document.uri)
-            {
-                doc
-            } else {
+            let Some(doc) =
+                (self.docs).get(&params.text_document_position_params.text_document.uri)
+            else {
                 return Ok(None);
             };
             let position = params.text_document_position_params.position;
             let (line, col) = lsp_pos_to_uiua(position);
-            for (name, idx) in &current_doc.code_meta.global_references {
-                if name.span.contains_line_col(line, col) {
-                    let binding = &current_doc.asm.bindings[*idx];
+            let path = uri_path(&params.text_document_position_params.text_document.uri);
+            for (name, idx) in &doc.code_meta.global_references {
+                if name.span.contains_line_col(line, col) && name.span.src == path {
+                    let binding = &doc.asm.bindings[*idx];
                     let uri = match &binding.span.src {
                         InputSrc::Str(_) | InputSrc::Macro(_) => {
                             params.text_document_position_params.text_document.uri
@@ -1283,19 +1432,17 @@ mod server {
             &self,
             params: GotoDeclarationParams,
         ) -> Result<Option<GotoDeclarationResponse>> {
-            let current_doc = if let Some(doc) = self
-                .docs
-                .get(&params.text_document_position_params.text_document.uri)
-            {
-                doc
-            } else {
+            let Some(doc) =
+                (self.docs).get(&params.text_document_position_params.text_document.uri)
+            else {
                 return Ok(None);
             };
             let position = params.text_document_position_params.position;
             let (line, col) = lsp_pos_to_uiua(position);
-            for (name, idx) in &current_doc.code_meta.global_references {
-                if name.span.contains_line_col(line, col) {
-                    let binding = &current_doc.asm.bindings[*idx];
+            let path = uri_path(&params.text_document_position_params.text_document.uri);
+            for (name, idx) in &doc.code_meta.global_references {
+                if name.span.contains_line_col(line, col) && name.span.src == path {
+                    let binding = &doc.asm.bindings[*idx];
                     let uri = match &binding.span.src {
                         InputSrc::Str(_) | InputSrc::Macro(_) => {
                             params.text_document_position_params.text_document.uri
@@ -1442,9 +1589,13 @@ mod server {
             } else {
                 (true, true, 3, true)
             };
+            let path = uri_path(&params.text_document.uri);
             // Signature hints
             let mut hints = Vec::new();
             for (span, decl) in &doc.code_meta.function_sigs {
+                if span.src != path {
+                    continue;
+                }
                 let is_too_short = || {
                     let mut tokens =
                         span.as_str(&doc.asm.inputs, |s| lex(s, (), &mut Inputs::default()).0);
@@ -1500,6 +1651,9 @@ mod server {
             // Values
             if show_values {
                 for (span, values) in &doc.code_meta.top_level_values {
+                    if span.src != path {
+                        continue;
+                    }
                     let mut shown: Vec<String> = values.iter().map(Value::show).collect();
                     let mut md = "```uiua\n".to_string();
                     for shown in &shown {
@@ -1541,26 +1695,27 @@ mod server {
         }
 
         async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
-            let Some(doc) = self
-                .docs
-                .get(&params.text_document_position.text_document.uri)
+            let Some(doc) = (self.docs).get(&params.text_document_position.text_document.uri)
             else {
                 return Ok(None);
             };
             let (line, col) = lsp_pos_to_uiua(params.text_document_position.position);
+            let path = uri_path(&params.text_document_position.text_document.uri);
             for (i, binfo) in doc.asm.bindings.iter().enumerate() {
-                if binfo.span.contains_line_col(line, col) {
+                if binfo.span.contains_line_col(line, col) && binfo.span.src == path {
                     let mut locations = Vec::new();
-                    for (name, idx) in &doc.code_meta.global_references {
-                        if *idx == i {
-                            let uri = match &name.span.src {
-                                InputSrc::Str(_) | InputSrc::Macro(_) => {
-                                    params.text_document_position.text_document.uri.clone()
-                                }
-                                InputSrc::File(file) => path_to_uri(file)?,
-                            };
-                            let range = uiua_span_to_lsp(&name.span);
-                            locations.push(Location { uri, range });
+                    for entry in &self.docs {
+                        let uri = entry.key();
+                        let doc = entry.value();
+                        for (name, idx) in &doc.code_meta.global_references {
+                            if *idx == i {
+                                let uri = match &name.span.src {
+                                    InputSrc::Str(_) | InputSrc::Macro(_) => uri.clone(),
+                                    InputSrc::File(file) => path_to_uri(file)?,
+                                };
+                                let range = uiua_span_to_lsp(&name.span);
+                                locations.push(Location { uri, range });
+                            }
                         }
                     }
                     return Ok(Some(locations));
@@ -1632,7 +1787,8 @@ mod server {
 
     fn uri_path(uri: &Url) -> PathBuf {
         let path = uri.path().replace("/c%3A", "C:");
-        PathBuf::from(path)
+        let path = PathBuf::from(path);
+        path.canonicalize().unwrap_or(path)
     }
 
     fn lsp_pos_to_uiua(pos: Position) -> (usize, usize) {

@@ -13,7 +13,7 @@ use crate::{
     algorithm::map::MapKeys,
     cowslice::{cowslice, CowSlice},
     grid_fmt::GridFmt,
-    Boxed, Complex, Shape, Uiua, Value,
+    Boxed, Complex, HandleKind, Shape, Uiua, Value,
 };
 
 /// Uiua's array type
@@ -72,6 +72,9 @@ pub struct ArrayMeta {
     /// The pointer value for FFI
     #[serde(skip)]
     pub pointer: Option<usize>,
+    /// The kind of system handle
+    #[serde(skip)]
+    pub handle_kind: Option<HandleKind>,
 }
 
 bitflags! {
@@ -102,6 +105,7 @@ pub static DEFAULT_META: ArrayMeta = ArrayMeta {
     flags: ArrayFlags::NONE,
     map_keys: None,
     pointer: None,
+    handle_kind: None,
 };
 
 /// Array metadata that can be persisted across operations
@@ -244,6 +248,10 @@ impl<T> Array<T> {
     pub fn shape(&self) -> &Shape {
         &self.shape
     }
+    /// Get a mutable reference to the shape of the array
+    pub fn shape_mut(&mut self) -> &mut Shape {
+        &mut self.shape
+    }
     /// Get the metadata of the array
     pub fn meta(&self) -> &ArrayMeta {
         self.meta.as_deref().unwrap_or(&DEFAULT_META)
@@ -310,7 +318,7 @@ impl<T> Array<T> {
         }
     }
     /// Get an iterator over the row slices of the array
-    pub fn row_slices(&self) -> impl ExactSizeIterator<Item = &[T]> + DoubleEndedIterator {
+    pub fn row_slices(&self) -> impl ExactSizeIterator<Item = &[T]> + DoubleEndedIterator + Clone {
         (0..self.row_count()).map(move |row| self.row_slice(row))
     }
     /// Get a slice of a row
@@ -324,6 +332,9 @@ impl<T> Array<T> {
         if let Some(meta) = self.get_meta_mut() {
             meta.flags &= other.flags;
             meta.map_keys = None;
+            if meta.handle_kind != other.handle_kind {
+                meta.handle_kind = None;
+            }
         }
     }
 }
@@ -410,6 +421,23 @@ impl<T: ArrayValue> Array<T> {
         let end = start + row_len;
         Self::new(&self.shape[1..], self.data.slice(start..end))
     }
+    #[track_caller]
+    pub(crate) fn depth_row(&self, depth: usize, row: usize) -> Self {
+        if self.rank() <= depth {
+            let mut row = self.clone();
+            row.take_map_keys();
+            row.take_label();
+            return row;
+        }
+        let row_count: usize = self.shape[..depth + 1].iter().product();
+        if row >= row_count {
+            panic!("row index out of bounds: {} >= {}", row, row_count);
+        }
+        let row_len: usize = self.shape[depth + 1..].iter().product();
+        let start = row * row_len;
+        let end = start + row_len;
+        Self::new(&self.shape[depth + 1..], self.data.slice(start..end))
+    }
     /// Consume the array and get an iterator over its rows
     pub fn into_rows(self) -> impl ExactSizeIterator<Item = Self> + DoubleEndedIterator {
         (0..self.row_count()).map(move |i| self.row(i))
@@ -443,6 +471,26 @@ impl<T: ArrayValue> Array<T> {
     pub fn row_slice_mut(&mut self, row: usize) -> &mut [T] {
         let row_len = self.row_len();
         &mut self.data.as_mut_slice()[row * row_len..(row + 1) * row_len]
+    }
+    /// Add a 1-length dimension to the front of the array's shape
+    pub fn fix(&mut self) {
+        self.fix_depth(0);
+    }
+    pub(crate) fn fix_depth(&mut self, depth: usize) {
+        let depth = depth.min(self.rank());
+        self.shape.insert(depth, 1);
+        if depth == 0 {
+            if let Some(keys) = self.map_keys_mut() {
+                keys.fix();
+            }
+        }
+    }
+    /// Remove a 1-length dimension from the front of the array's shape
+    pub fn unfix(&mut self) -> bool {
+        if let Some(keys) = self.map_keys_mut() {
+            keys.unfix();
+        }
+        self.shape.unfix()
     }
 }
 

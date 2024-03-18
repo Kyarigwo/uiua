@@ -1,5 +1,7 @@
 //! Compiler code for modifiers
 
+use std::slice;
+
 use crate::format::format_words;
 
 use super::*;
@@ -185,17 +187,19 @@ impl Compiler {
                         self.fatal_error(modified.modifier.span.clone(), "Macro recurs too deep")
                     );
                 }
-                if let Some(mut words) = self.stack_macros.get(&local.index).cloned() {
+                if let Some(mut mac) = self.stack_macros.get(&local.index).cloned() {
                     // Stack macros
-                    let instrs = self
-                        .expand_macro(
-                            r.name.value.clone(),
-                            &mut words,
-                            modified.operands,
-                            modified.modifier.span.clone(),
-                        )
-                        .and_then(|()| self.compile_words(words, true));
-                    let instrs = instrs?;
+                    // Expand
+                    self.expand_macro(
+                        r.name.value.clone(),
+                        &mut mac.words,
+                        modified.operands,
+                        modified.modifier.span.clone(),
+                    )?;
+                    // Compile
+                    let instrs =
+                        self.temp_scope(mac.names, |comp| comp.compile_words(mac.words, true))?;
+                    // Add
                     match instrs_signature(&instrs) {
                         Ok(sig) => {
                             let func = self.add_function(
@@ -214,7 +218,7 @@ impl Compiler {
                         let span = self.add_span(modified.modifier.span);
                         self.push_instr(Instr::Call(span));
                     }
-                } else if let Some(function) = self.array_macros.get(&local.index).cloned() {
+                } else if let Some(mac) = self.array_macros.get(&local.index).cloned() {
                     // Array macros
                     let full_span = (modified.modifier.span.clone())
                         .merge(modified.operands.last().unwrap().span.clone());
@@ -232,7 +236,7 @@ impl Compiler {
                             word => vec![operand.span.sp(word)],
                         };
                     }
-                    let op_sigs = if function.signature().args == 2 {
+                    let op_sigs = if mac.function.signature().args == 2 {
                         let mut comp = self.clone();
                         let mut sig_data: EcoVec<u8> = EcoVec::with_capacity(operands.len() * 2);
                         for op in &operands {
@@ -265,7 +269,7 @@ impl Compiler {
                             env.push(sigs);
                         }
                         env.push(formatted);
-                        env.call(function)?;
+                        env.call(mac.function)?;
                         let val = env.pop("macro result")?;
 
                         // Parse the macro output
@@ -288,7 +292,9 @@ impl Compiler {
                     self.code_meta
                         .macro_expansions
                         .insert(full_span, (r.name.value.clone(), code.clone()));
-                    self.quote(&code, &modified.modifier.span, call)?;
+                    self.temp_scope(mac.names, |comp| {
+                        comp.quote(&code, &modified.modifier.span, call)
+                    })?;
                 } else {
                     return Err(self.fatal_error(
                         modified.modifier.span.clone(),
@@ -303,43 +309,6 @@ impl Compiler {
                 return Ok(());
             }
         };
-
-        // Give advice about redundancy
-        match prim {
-            m @ Primitive::Each if self.macro_depth == 0 => {
-                if let [Sp {
-                    value: Word::Primitive(prim),
-                    span,
-                }] = modified.operands.as_slice()
-                {
-                    if prim.class().is_pervasive() {
-                        let span = modified.modifier.span.clone().merge(span.clone());
-                        self.emit_diagnostic(
-                            format!(
-                                "Using {m} with a pervasive primitive like {p} is \
-                                redundant. Just use {p} by itself.",
-                                m = m.format(),
-                                p = prim.format(),
-                            ),
-                            DiagnosticKind::Advice,
-                            span,
-                        );
-                    }
-                } else if words_look_pervasive(&modified.operands) {
-                    let span = modified.modifier.span.clone();
-                    self.emit_diagnostic(
-                        format!(
-                            "{m}'s function is pervasive, \
-                                so {m} is redundant here.",
-                            m = m.format()
-                        ),
-                        DiagnosticKind::Advice,
-                        span,
-                    );
-                }
-            }
-            _ => {}
-        }
 
         // Compile operands
         let instrs = self.compile_words(modified.operands, false)?;
@@ -807,21 +776,20 @@ impl Compiler {
                 }
             }
             Bind => {
-                let operand = modified.code_operands().next().cloned().unwrap();
+                let operand = modified.code_operands().next().unwrap().clone();
                 let operand_span = operand.span.clone();
                 self.scope.bind_locals.push(HashSet::new());
                 let (mut instrs, mut sig) = self.compile_operand_word(operand)?;
                 let locals = self.scope.bind_locals.pop().unwrap();
                 let local_count = locals.into_iter().max().map_or(0, |i| i + 1);
                 let span = self.add_span(modified.modifier.span.clone());
-                sig.args += local_count;
-                if sig.args < 3 {
+                if local_count < 3 {
                     self.emit_diagnostic(
                         format!(
                             "{} should be reserved for functions with at least 3 arguments, \
                             but this function has {} arguments",
                             Bind.format(),
-                            sig.args
+                            local_count
                         ),
                         DiagnosticKind::Advice,
                         operand_span,
@@ -830,11 +798,12 @@ impl Compiler {
                 instrs.insert(
                     0,
                     Instr::PushLocals {
-                        count: sig.args,
+                        count: local_count,
                         span,
                     },
                 );
                 instrs.push(Instr::PopLocals);
+                sig.args += local_count;
                 finish!(instrs, sig);
             }
             Comptime => {
@@ -843,7 +812,7 @@ impl Compiler {
             }
             Reduce => {
                 // Reduce content
-                let operand = modified.code_operands().next().cloned().unwrap();
+                let operand = modified.code_operands().next().unwrap().clone();
                 let Word::Modified(m) = &operand.value else {
                     return Ok(false);
                 };
@@ -853,7 +822,7 @@ impl Compiler {
                 if m.code_operands().count() != 1 {
                     return Ok(false);
                 }
-                let operand = m.code_operands().next().cloned().unwrap();
+                let operand = m.code_operands().next().unwrap().clone();
                 let (content_instrs, sig) = self.compile_operand_word(operand)?;
                 if sig.args == 1 {
                     self.emit_diagnostic(
@@ -879,9 +848,38 @@ impl Compiler {
                 ];
                 finish!(instrs, Signature::new(1, 1));
             }
+            Each => {
+                // Each pervasive
+                let operand = modified.code_operands().next().unwrap().clone();
+                if !words_look_pervasive(slice::from_ref(&operand)) {
+                    return Ok(false);
+                }
+                let (instrs, sig) = self.compile_operand_word(operand)?;
+                let span = modified.modifier.span.clone();
+                self.emit_diagnostic(
+                    if let Some((prim, _)) = instrs_as_flipped_primitive(&instrs, &self.asm)
+                        .filter(|(prim, _)| prim.class().is_pervasive())
+                    {
+                        format!(
+                            "{} is pervasive, so {} is redundant here.",
+                            prim.format(),
+                            Each.format(),
+                        )
+                    } else {
+                        format!(
+                            "{m}'s function is pervasive, \
+                        so {m} is redundant here.",
+                            m = Each.format(),
+                        )
+                    },
+                    DiagnosticKind::Advice,
+                    span,
+                );
+                finish!(instrs, sig);
+            }
             Table => {
-                // Normalize table compilation, but get some diagnostics
-                let operand = modified.code_operands().next().cloned().unwrap();
+                // Normal table compilation, but get some diagnostics
+                let operand = modified.code_operands().next().unwrap().clone();
                 let op_span = operand.span.clone();
                 let function_id = FunctionId::Anonymous(op_span.clone());
                 let (instrs, sig) = self.compile_operand_word(operand)?;
@@ -909,7 +907,7 @@ impl Compiler {
                 finish!(instrs, sig);
             }
             Content => {
-                let operand = modified.code_operands().next().cloned().unwrap();
+                let operand = modified.code_operands().next().unwrap().clone();
                 let (instrs, sig) = self.compile_operand_word(operand)?;
                 let mut prefix = EcoVec::new();
                 let span = self.add_span(modified.modifier.span.clone());
@@ -1000,15 +998,20 @@ impl Compiler {
         &mut self,
         name: Ident,
         macro_words: &mut Vec<Sp<Word>>,
-        operands: Vec<Sp<Word>>,
+        mut operands: Vec<Sp<Word>>,
         span: CodeSpan,
     ) -> UiuaResult {
+        // Mark the operands as macro arguments
+        set_in_macro_arg(&mut operands);
+        // Collect placeholders
         let mut ops = collect_placeholder(macro_words);
         ops.reverse();
         let span = span.merge(operands.last().unwrap().span.clone());
+        // Initialize the placeholder stack
         let mut ph_stack: Vec<Sp<Word>> =
             operands.into_iter().filter(|w| w.value.is_code()).collect();
         let mut replaced = Vec::new();
+        // Run the placeholder operations
         for op in ops {
             let span = op.span;
             let op = op.value;
@@ -1038,6 +1041,7 @@ impl Compiler {
                 }
             }
         }
+        // Warn if there are operands left
         if !ph_stack.is_empty() {
             let span = (ph_stack.first().unwrap().span.clone())
                 .merge(ph_stack.last().unwrap().span.clone());
@@ -1051,8 +1055,10 @@ impl Compiler {
                 span,
             );
         }
+        // Replace placeholders in the macro's words
         let mut operands = replaced.into_iter().rev();
         replace_placeholders(macro_words, &mut || operands.next().unwrap());
+        // Format and store the expansion for the LSP
         let mut words_to_format = Vec::new();
         for word in &*macro_words {
             match &word.value {
@@ -1148,6 +1154,7 @@ impl Compiler {
         }
         Ok(())
     }
+    /// Prepare the macro environment to run some expanded code.
     pub(super) fn prepare_env(&mut self) -> UiuaResult {
         let top_slices = take(&mut self.macro_env.asm.top_slices);
         let mut bindings = take(&mut self.macro_env.asm.bindings);
@@ -1159,5 +1166,27 @@ impl Compiler {
         }
         self.macro_env.no_io(Uiua::run_top_slices)?;
         Ok(())
+    }
+    /// Run a function in a temporary scope with the given names.
+    /// Newly created bindings will be added to the current scope after the function is run.
+    fn temp_scope<T>(
+        &mut self,
+        names: IndexMap<Ident, LocalName>,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let macro_names_len = names.len();
+        let temp_scope = Scope {
+            kind: ScopeKind::Temp,
+            names,
+            experimental: self.scope.experimental,
+            ..Default::default()
+        };
+        self.higher_scopes
+            .push(replace(&mut self.scope, temp_scope));
+        let res = f(self);
+        let mut scope = self.higher_scopes.pop().unwrap();
+        (scope.names).extend(self.scope.names.drain(macro_names_len..));
+        self.scope = scope;
+        res
     }
 }

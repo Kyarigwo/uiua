@@ -24,8 +24,6 @@ pub enum DocsPage {
     Design,
     Technical,
     Install,
-    Audio,
-    ImagesAndGifs,
     AllFunctions,
     Uiuisms,
     Changelog,
@@ -46,8 +44,6 @@ impl IntoParam for DocsPage {
             "design" => Ok(Self::Design),
             "technical" => Ok(Self::Technical),
             "install" => Ok(Self::Install),
-            "audio" => Ok(Self::Audio),
-            "images" => Ok(Self::ImagesAndGifs),
             "all-functions" => Ok(Self::AllFunctions),
             "isms" => Ok(Self::Uiuisms),
             "changelog" => Ok(Self::Changelog),
@@ -80,8 +76,6 @@ pub fn Docs() -> impl IntoView {
             DocsPage::Design => Design().into_view(),
             DocsPage::Technical => Technical().into_view(),
             DocsPage::Install => Install().into_view(),
-            DocsPage::Audio => Audio().into_view(),
-            DocsPage::ImagesAndGifs => ImagesAndGifs().into_view(),
             DocsPage::AllFunctions => AllFunctions().into_view(),
             DocsPage::Uiuisms => Uiuisms().into_view(),
             DocsPage::Changelog => Changelog().into_view(),
@@ -91,7 +85,7 @@ pub fn Docs() -> impl IntoView {
             DocsPage::Combinators => Combinators().into_view(),
             DocsPage::Optimizations => Optimizations().into_view(),
             DocsPage::FormatConfig => {
-                title_markdown("Formatter Configuration", "/text/format_config.md").into_view()
+                title_markdown("Formatter Configuration", "/text/format_config.md", ()).into_view()
             }
         };
 
@@ -108,10 +102,11 @@ pub fn Docs() -> impl IntoView {
     }
 }
 
-fn title_markdown(title: &str, src: &str) -> impl IntoView {
+pub fn title_markdown(title: &str, src: &str, end: impl IntoView) -> impl IntoView {
     view! {
         <Title text={format!("{} - Uiua Docs", title)}/>
         <Markdown src=src/>
+        { end }
     }
 }
 
@@ -228,9 +223,11 @@ fn DocsHome(#[prop(optional)] search: String) -> impl IntoView {
         }</ul>
 
         <Hd id="other-tutorials">"Other Tutorials"</Hd>
+        <p>"These tutorials cover more specific topics. They assume you have read the main tutorial above, but they can be read in any order."</p>
         <ul>
-            <li><A href="/docs/audio">"Audio"</A>" - how to generate and play audio"</li>
-            <li><A href="/docs/images">"Images and GIFs"</A>" - how to generate images and GIFs"</li>
+            <li><A href="/tutorial/strings">"Strings"</A>" - how to manipulate strings"</li>
+            <li><A href="/tutorial/audio">"Audio"</A>" - how to generate and play audio"</li>
+            <li><A href="/tutorial/images">"Images and GIFs"</A>" - how to generate images and GIFs"</li>
         </ul>
 
         <Hd id="other-docs">"Other Docs"</Hd>
