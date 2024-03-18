@@ -14,14 +14,15 @@
       pkgs = nixpkgs.legacyPackages.${system};
       craneLib = crane.lib.${system};
       uiua-crate = craneLib.buildPackage {
+        cargoExtraArgs = "--locked --features  libffi/system";
         src = craneLib.cleanCargoSource (craneLib.path ./.);
         buildInputs = (nixpkgs.lib.optionals pkgs.stdenv.isDarwin [
-          pkgs.iconv
-          pkgs.darwin.apple_sdk.frameworks.CoreServices
-          pkgs.darwin.apple_sdk.frameworks.Foundation
-        ]) ++ [
-          pkgs.libffi
-        ];
+            pkgs.iconv
+            pkgs.darwin.apple_sdk.frameworks.CoreServices
+            pkgs.darwin.apple_sdk.frameworks.Foundation
+          ]) ++ [
+            pkgs.libffi
+          ];
       };
     in
       {
