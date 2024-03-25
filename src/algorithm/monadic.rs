@@ -881,35 +881,43 @@ impl Array<u8> {
 
 impl Value {
     /// Get the indices `where` the value is nonzero
-    pub fn wher(&self, env: &Uiua) -> UiuaResult<Array<f64>> {
-        Ok(if self.rank() <= 1 {
-            let counts = self.as_nats(env, "Argument to where must be an array of naturals")?;
-            let total: usize = counts.iter().fold(0, |acc, &b| acc.saturating_add(b));
-            let mut data = EcoVec::with_capacity(total);
-            for (i, &b) in counts.iter().enumerate() {
-                for _ in 0..b {
-                    let i = i as f64;
-                    data.push(i);
-                }
+    pub fn wher(&self, env: &Uiua) -> UiuaResult<Value> {
+        let counts =
+            self.as_natural_array(env, "Argument to where must be an array of naturals")?;
+        let total: usize = counts.data.iter().fold(0, |acc, &b| acc.saturating_add(b));
+        Ok(match self.rank() {
+            0 => {
+                validate_size::<u8>(total, env)?;
+                let data = eco_vec![0u8; total];
+                Array::new([total], data).into()
             }
-            Array::from(data)
-        } else {
-            let counts =
-                self.as_natural_array(env, "Argument to where must be an array of naturals")?;
-            let total: usize = counts.data.iter().fold(0, |acc, &b| acc.saturating_add(b));
-            let mut data = EcoVec::with_capacity(total);
-            for (i, &b) in counts.data.iter().enumerate() {
-                for _ in 0..b {
-                    let mut i = i;
-                    let start = data.len();
-                    for &d in counts.shape.iter().rev() {
-                        data.insert(start, (i % d) as f64);
-                        i /= d;
+            1 => {
+                validate_size::<f64>(total, env)?;
+                let mut data = EcoVec::with_capacity(total);
+                for (i, &b) in counts.data.iter().enumerate() {
+                    for _ in 0..b {
+                        let i = i as f64;
+                        data.push(i);
                     }
                 }
+                Array::from(data).into()
             }
-            let shape = Shape::from([total, counts.rank()].as_ref());
-            Array::new(shape, data)
+            _ => {
+                validate_size::<f64>(total * counts.rank(), env)?;
+                let mut data = EcoVec::with_capacity(total * counts.rank());
+                for (i, &b) in counts.data.iter().enumerate() {
+                    for _ in 0..b {
+                        let mut i = i;
+                        let start = data.len();
+                        for &d in counts.shape.iter().rev() {
+                            data.insert(start, (i % d) as f64);
+                            i /= d;
+                        }
+                    }
+                }
+                let shape = Shape::from([total, counts.rank()].as_ref());
+                Array::new(shape, data).into()
+            }
         })
     }
     /// Get the `first` index `where` the value is nonzero
@@ -1296,14 +1304,14 @@ impl Value {
             Ok(s)
         }
     }
-    pub(crate) fn from_csv(csv: &str, env: &mut Uiua) -> UiuaResult<Self> {
+    pub(crate) fn from_csv(_csv: &str, env: &mut Uiua) -> UiuaResult<Self> {
         #[cfg(not(feature = "csv"))]
         return Err(env.error("CSV support is not enabled in this environment"));
         #[cfg(feature = "csv")]
         {
             let mut reader = csv::ReaderBuilder::new()
                 .has_headers(false)
-                .from_reader(csv.as_bytes());
+                .from_reader(_csv.as_bytes());
             env.with_fill("".into(), |env| {
                 let mut rows = Vec::new();
                 for result in reader.records() {

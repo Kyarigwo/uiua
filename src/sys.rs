@@ -35,7 +35,7 @@ Double ← +.
 Increment ← +1
 RangeDiff ↚ ⇡-
 Span ← +⟜RangeDiff
-Mac! ← /^2 [1 2 3 4 5]
+Mac! ← /^! [1 2 3 4 5]
 Foo ← 5
 Bar ← \"bar\""
                 .into(),
@@ -177,7 +177,7 @@ sys_op! {
     ///
     /// The result is a 2-element array of the height and width of the terminal.
     /// Height comes first so that the array can be used as a shape in [reshape].
-    (0, TermSize, Env, "&ts", "terminal size"),
+    (0, TermSize, Env, "&ts", "terminal size", [mutating]),
     /// Set the terminal to raw mode
     ///
     /// Expects a boolean.
@@ -1521,10 +1521,14 @@ impl SysOp {
                     .map_err(|e| env.error(e))?;
             }
             SysOp::Sleep => {
-                let seconds = env
+                let mut seconds = env
                     .pop(1)?
                     .as_num(env, "Sleep time must be a number")?
                     .max(0.0);
+                if let Some(limit) = env.rt.execution_limit {
+                    let max = limit - env.rt.execution_start;
+                    seconds = seconds.min(max);
+                }
                 env.rt.backend.sleep(seconds).map_err(|e| env.error(e))?;
             }
             SysOp::TcpListen => {

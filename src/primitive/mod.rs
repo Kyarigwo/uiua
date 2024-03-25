@@ -4,16 +4,18 @@
 
 mod defs;
 pub use defs::*;
-use ecow::EcoString;
+use ecow::{EcoString, EcoVec};
+use regex::Regex;
 
 use std::{
     borrow::{BorrowMut, Cow},
     cell::RefCell,
+    collections::HashMap,
     f64::{
         consts::{PI, TAU},
         INFINITY,
     },
-    fmt::{self},
+    fmt,
     sync::{
         atomic::{self, AtomicUsize},
         OnceLock,
@@ -26,7 +28,7 @@ use rand::prelude::*;
 use serde::*;
 
 use crate::{
-    algorithm::{self, loops, reduce, table, zip},
+    algorithm::{self, invert, loops, reduce, table, zip},
     array::Array,
     boxed::Boxed,
     check::instrs_signature,
@@ -156,7 +158,6 @@ impl fmt::Display for ImplPrimitive {
         use ImplPrimitive::*;
         use Primitive::*;
         match self {
-            UnPop => write!(f, "{Un}{Pop}"),
             UnBits => write!(f, "{Un}{Bits}"),
             UnWhere => write!(f, "{Un}{Where}"),
             UnCouple => write!(f, "{Un}{Couple}"),
@@ -174,8 +175,6 @@ impl fmt::Display for ImplPrimitive {
             UnCsv => write!(f, "{Un}{Csv}"),
             UndoTake => write!(f, "{Under}{Take}"),
             UndoDrop => write!(f, "{Under}{Drop}"),
-            UnDrop => write!(f, "{Un}{Drop}"),
-            UnKeep => write!(f, "{Un}{Keep}"),
             UndoSelect => write!(f, "{Under}{Select}"),
             UndoPick => write!(f, "{Under}{Pick}"),
             UndoInsert => write!(f, "{Under}{Insert}"),
@@ -205,6 +204,7 @@ impl fmt::Display for ImplPrimitive {
             Adjacent => write!(f, "{Rows}{Reduce}(…){Windows}2"),
             BothTrace => write!(f, "{Both}{Trace}"),
             UnBothTrace => write!(f, "{Un}{Both}{Trace}"),
+            MatchPattern => write!(f, "pattern match"),
             &ReduceDepth(n) => {
                 for _ in 0..n {
                     write!(f, "{Rows}")?;
@@ -845,13 +845,6 @@ impl Primitive {
 impl ImplPrimitive {
     pub(crate) fn run(&self, env: &mut Uiua) -> UiuaResult {
         match self {
-            ImplPrimitive::UnPop => {
-                env.push(
-                    env.value_fill()
-                        .ok_or_else(|| env.error("No fill set").fill())?
-                        .clone(),
-                );
-            }
             ImplPrimitive::Asin => env.monadic_env(Value::asin)?,
             ImplPrimitive::UndoKeep => {
                 let from = env.pop(1)?;
@@ -883,7 +876,6 @@ impl ImplPrimitive {
                 env.push(vals);
                 env.push(keys);
             }
-            ImplPrimitive::UnKeep => env.dyadic_ro_env(Value::unkeep)?,
             ImplPrimitive::UndoPick => {
                 let index = env.pop(1)?;
                 let into = env.pop(2)?;
@@ -935,12 +927,12 @@ impl ImplPrimitive {
                 env.push(left);
             }
             ImplPrimitive::UnJoin => {
-                let val = env.pop(1)?;
-                let (first, rest) = val.unjoin(env)?;
+                let shape = env.pop(1)?;
+                let val = env.pop(2)?;
+                let (first, rest) = val.unjoin(shape, env)?;
                 env.push(rest);
                 env.push(first);
             }
-            ImplPrimitive::UnDrop => env.dyadic_oo_env(Value::undrop)?,
             ImplPrimitive::UnAtan => {
                 let x = env.pop(1)?;
                 let sin = x.clone().sin(env)?;
@@ -1010,6 +1002,7 @@ impl ImplPrimitive {
                 env.push(random());
             }
             ImplPrimitive::Adjacent => reduce::adjacent(env)?,
+            ImplPrimitive::MatchPattern => invert::match_pattern(env)?,
             &ImplPrimitive::ReduceDepth(depth) => reduce::reduce(depth, env)?,
             &ImplPrimitive::TransposeN(n) => env.monadic_mut(|val| val.transpose_depth(0, n))?,
         }
@@ -1017,18 +1010,7 @@ impl ImplPrimitive {
     }
 }
 
-#[cfg(not(feature = "regex"))]
 fn regex(env: &mut Uiua) -> UiuaResult {
-    Err(env.error("Regex support is not enabled"))
-}
-
-#[cfg(feature = "regex")]
-fn regex(env: &mut Uiua) -> UiuaResult {
-    use std::collections::HashMap;
-
-    use ecow::EcoVec;
-    use regex::Regex;
-
     thread_local! {
         pub static REGEX_CACHE: RefCell<HashMap<String, Regex>> = RefCell::new(HashMap::new());
     }

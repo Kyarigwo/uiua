@@ -1,12 +1,12 @@
 # Uiua Todo
 
 - 0.10
-  - Proofread and update tutorial and tour
+  - Stabilize maps
+- 0.11
+  - Full HTTPS support
   - System functions
     - Excel
-- 0.11
-  - Pattern matching
-  - Full HTTPS support
+- Change how functions are compiled so that compiled-out functions don't end up in the assembly
 - Multimedia
   - Sound input
   - Webcam input

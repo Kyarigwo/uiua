@@ -17,9 +17,15 @@ use instant::Duration;
 use thread_local::ThreadLocal;
 
 use crate::{
-    algorithm, array::Array, boxed::Boxed, check::instrs_temp_signatures, function::*, lex::Span,
-    value::Value, Assembly, Compiler, Complex, Global, Ident, Inputs, IntoSysBackend, LocalName,
-    Primitive, SafeSys, SysBackend, TraceFrame, UiuaError, UiuaResult, VERSION,
+    algorithm::{self, invert},
+    array::Array,
+    boxed::Boxed,
+    check::instrs_temp_signatures,
+    function::*,
+    lex::Span,
+    value::Value,
+    Assembly, Compiler, Complex, Global, Ident, Inputs, IntoSysBackend, LocalName, Primitive,
+    SafeSys, SysBackend, SysOp, TraceFrame, UiuaError, UiuaResult, VERSION,
 };
 
 /// The Uiua interpreter
@@ -40,7 +46,7 @@ pub(crate) struct Runtime {
     /// The thread's temp stack for inlining
     temp_stacks: [Vec<Value>; TempStack::CARDINALITY],
     /// The stack height at the start of each array currently being built
-    array_stack: Vec<usize>,
+    pub(crate) array_stack: Vec<usize>,
     /// The call stack
     call_stack: Vec<StackFrame>,
     /// The recur stack
@@ -50,9 +56,9 @@ pub(crate) struct Runtime {
     /// The locals stack
     pub(crate) locals_stack: Vec<Vec<Value>>,
     /// A limit on the execution duration in milliseconds
-    execution_limit: Option<f64>,
+    pub(crate) execution_limit: Option<f64>,
     /// The time at which execution started
-    execution_start: f64,
+    pub(crate) execution_start: f64,
     /// Whether to print the time taken to execute each instruction
     time_instrs: bool,
     /// Whether to do top-level IO
@@ -445,6 +451,15 @@ code:
             }
             let res = match instr {
                 Instr::Comment(_) => Ok(()),
+                // Pause execution timer during &sc
+                &Instr::Prim(prim @ Primitive::Sys(SysOp::ScanLine), span) => {
+                    self.with_prim_span(span, Some(prim), |env| {
+                        let start = instant::now();
+                        let res = prim.run(env);
+                        env.rt.execution_start += instant::now() - start;
+                        res
+                    })
+                }
                 &Instr::Prim(prim, span) => {
                     self.with_prim_span(span, Some(prim), |env| prim.run(env))
                 }
@@ -582,6 +597,10 @@ code:
                         env.push(s);
                         Ok(())
                     })
+                }
+                Instr::MatchFormatPattern { parts, span } => {
+                    let parts = parts.clone();
+                    self.with_span(*span, |env| invert::match_format_pattern(parts, env))
                 }
                 Instr::Label { label, span } => {
                     let label = if label.is_empty() {
@@ -723,13 +742,18 @@ code:
                 return Err(self.trace_error(err, frame));
             }
             self.rt.call_stack.last_mut().unwrap().pc += 1;
-            if let Some(limit) = self.rt.execution_limit {
-                if instant::now() - self.rt.execution_start > limit {
-                    return Err(UiuaError::Timeout(
-                        self.span(),
-                        self.inputs().clone().into(),
-                    ));
-                }
+            self.respect_execution_limit()?;
+        }
+        Ok(())
+    }
+    /// Timeout if an execution limit is set and has been exceeded
+    pub fn respect_execution_limit(&self) -> UiuaResult {
+        if let Some(limit) = self.rt.execution_limit {
+            if instant::now() - self.rt.execution_start > limit {
+                return Err(UiuaError::Timeout(
+                    self.span(),
+                    self.inputs().clone().into(),
+                ));
             }
         }
         Ok(())

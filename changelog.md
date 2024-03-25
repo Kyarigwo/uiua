@@ -8,10 +8,17 @@ This version is not yet released. If you are reading this on the website, then t
 - **Breaking Change** - Multiline strings are now also *raw strings* which do not require escaping
   - They are no longer format strings by default
   - Raw strings can be made format strings with an extra `$`, i.e. `$$ …`
+- **Breaking Change** - [`try ⍣`](https://uiua.org/docs/try)'s handler function is now passed the original arguments *before* the error
+- [`try ⍣`](https://uiua.org/docs/try) now works with function packs of more than 2 functions
+  - This tries each function in the pack in order
 - Switch functions now format to use `⟨⟩` brackets
   - This makes them easier to identify when reading
   - It also allows switch functions to be used as modifier arguments without extra nesting
 - Switch functions now work with [`under ⍜`](https://uiua.org/docs/under)
+- Add pattern matching with [`un °`](https://uiua.org/docs/un)
+  - Constant values can now be inverted to form a function which errors if the top value on the stack does not match
+  - Format strings can be inverted to extract substrings
+  - Read more in the new [Pattern Matching](https://uiua.org/tutorial/patternmatching) tutorial
 - Git modules are no longer experimental
   - Modules are added automatically as Git submodules when imported
   - See the [Modules](https://uiua.org/tutorial/modules#git-modules) tutorial for more information
@@ -31,7 +38,6 @@ This version is not yet released. If you are reading this on the website, then t
 - [`inventory ⍚`](https://uiua.org/docs/inventory) can now take 3 or more arrays
 - [`repeat ⍥`](https://uiua.org/docs/repeat) can now take non-scalar repetition counts
   - This repeats the function a different number of times for each row of the inputs
-- [`drop ↘`](https://uiua.org/docs/drop) can now be used with [`un °`](https://uiua.org/docs/un) if a [`fill ⬚`](https://uiua.org/docs/fill) is set
 - Characters can now be [`multiply ×`](https://uiua.org/docs/multiply)d or [`divide ÷`](https://uiua.org/docs/divide)d by numbers to possibly toggle their case
 - Add the [`csv`](https://uiua.org/docs/csv) function, which encodes and decodes CSV data
 - Add the [`&clget`](https://uiua.org/docs/&clget) and [`&clset`](https://uiua.org/docs/&clset) system functions, which allow copying and pasting text to and from the system clipboard
@@ -42,8 +48,10 @@ This version is not yet released. If you are reading this on the website, then t
 - Add `df`, `ddf`, etc shortcuts for [`dip ⊙`](https://uiua.org/docs/dip) [`fix ¤`](https://uiua.org/docs/fix)
 - Existing macros are now called "stack macros" to distinguish them from the new "array macros"
   - Stack macros are now [hygienic](https://en.wikipedia.org/wiki/Hygienic_macro)
-- Add experimental array macros, which allow code to be generated and manipulated at compile time as strings
+- Add array macros, which allow code to be generated and manipulated at compile time as strings
   - These are specified with a `^` immediately following a binding's arrow
+- Add the wildcard constant `W`, which matches any number
+  - This works well with [`match ≍`](https://uiua.org/docs/match), [`find ⌕`](https://uiua.org/docs/find), and [`mask ⦷`](https://uiua.org/docs/mask)
 - Add the experimental [`coordinate ⟔`](https://uiua.org/docs/coordinate) function, which searches an array for a value and returns a multidimensional index
   - [`coordinate ⟔`](https://uiua.org/docs/coordinate) is to [`pick ⊡`](https://uiua.org/docs/pick) as [`indexof ⊗`](https://uiua.org/docs/indexof) is to [`select ⊏`](https://uiua.org/docs/select)
 - Experimental function strands now use the `‿` character, which formats from `__`
@@ -81,7 +89,10 @@ This version is not yet released. If you are reading this on the website, then t
 - Various performance improvements
 - Lots of bug and crash fixes
 ### Website
-- Add a [Working with Strings](https://uiua.org/tutorial/strings) tutorial
+- Tutorials
+  - Add a [Working with Strings](https://uiua.org/tutorial/strings) tutorial
+  - Add array macros to the [Macros](https://uiua.org/tutorial/macros) tutorial
+  - Add the [Pattern Matching](https://uiua.org/tutorial/patternmatching) tutorial
 - Hide experimental glyphs in the editor by default
   - They can be toggled on in the settings
 - An `# Experimental!` comment can now be easily inserted via a settings button or with `Ctrl+E`

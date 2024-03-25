@@ -1,5 +1,7 @@
 //! All primitive definitions
 
+use crate::WILDCARD_NAN;
+
 use super::*;
 
 /// The definition of a shadowable constant
@@ -45,6 +47,8 @@ constant!(
     ("i", crate::Complex::I),
     /// IEEE 754-2008's `NaN`
     ("NaN", std::f64::NAN),
+    /// The wildcard `NaN` value that equals any other number
+    ("W", WILDCARD_NAN),
     /// The maximum integer that can be represented exactly
     ("MaxInt", 2f64.powi(53)),
     /// A string identifying the operating system
@@ -1043,10 +1047,6 @@ primitive!(
     /// ex: ↘ ¯7 [8 3 9 2 0]
     /// ex: ↘ 5 ↯3_3⇡9
     /// ex: ↘ ¯5 ↯3_3⇡9
-    ///
-    /// [un][drop] will pad an array if a [fill] is set.
-    /// ex: ⬚0°↘ 2 [1 2 3]
-    /// ex: ⬚0°↘ 2_¯3 [1_2 3_4]
     (2, Drop, DyadicArray, ("drop", '↘')),
     /// Rotate the elements of an array by n
     ///
@@ -1835,33 +1835,33 @@ primitive!(
     ([2], Fill, OtherModifier, ("fill", '⬚')),
     /// Call a function and catch errors
     ///
-    /// If the first function errors, the second function is called with the original arguments and the error value below.
+    /// If the first function errors, the second function is called with the original arguments and the error value.
     ///
-    /// Normal runtime errors become strings.
-    /// ex: ⍣(+1)$"Error: _" 2
-    /// ex: ⍣(+@a)$"Error: _" @b
-    /// Errors thrown with [assert] can be any value.
-    /// ex: ⍣(⍤5>10.|×5) 12
-    /// ex: ⍣(⍤5>10.|×5) 7
-    /// The functions must have the same number of outputs.
-    /// The handler function must have a number of arguments equal to 0, 1, or 1 + the number of arguments to the first function.
-    /// If the handler function has 0 arguments, then it is simply called.
+    /// If the handler function has 0 arguments, then it is simply called. This is a nice way to provide a default value.
     /// ex: ⍣⋕0 "5"
     ///   : ⍣⋕0 "dog"
-    /// If the handler function has 1 argument, then the error is passed to it.
-    /// ex: ⍣⋕∘ "5"
-    ///   : ⍣⋕∘ "dog"
-    /// If the handler function has more than 1 argument, then the error is passed to it along with the original arguments.
-    /// ex: ⍣⋕{⊙∘} "5"
-    ///   : ⍣⋕{⊙∘} "dog"
-    /// ex: ⍣(⍤0.+)10 3 5
-    ///   : ⍣(⍤0.+)¤  3 5
-    ///   : ⍣(⍤0.+)⊟  3 5
-    ///   : ⍣(⍤0.+)[⊙⊙∘] 3 5
-    /// If we want to provide a default value from the stack, we can use a bit of planet notation.
-    /// Here, we use [gap] to ignore the default value `5` in the tried function, and we also use it to ignore the error in the handler function.
-    /// ex: ⍣⋅⋕⋅∘ 5 "12"
-    ///   : ⍣⋅⋕⋅∘ 5 "dog"
+    /// The handler function will be passed at most the same arguments as the tried function, plus the error. It will only be passed as many arguments as it takes.
+    /// Normal runtime errors become strings. If you only care about the error, you can use [gap] or [pop] to ignore the arguments passed to the handler.
+    /// ex: ⍣(+1)⋅$"Error: _" 2   # No error
+    /// ex: ⍣(+@a)⋅$"Error: _" @b # Error
+    /// Errors thrown with [assert] can be any value.
+    /// ex: ⍣(⍤5>10.)⋅(×5) 12 # No error
+    /// ex: ⍣(⍤5>10.)⋅(×5) 7  # Error
+    /// We can see how values are passed to the handler by wrapping them in an array.
+    /// ex: ⍣⋕{⊙∘} "5"   # No error
+    ///   : ⍣⋕{⊙∘} "dog" # Error
+    /// ex: ⍣(⍤0.+)10    3 5 # Ignore both arguments and error
+    ///   : ⍣(⍤0.+)¤     3 5 # First argument only
+    ///   : ⍣(⍤0.+)⊟     3 5 # Both arguments
+    ///   : ⍣(⍤0.+)[⊙⊙∘] 3 5 # Both arguments and error
+    /// If we want to provide a default value from the stack, we can ignore it in the tried function with [gap] and then use [identity] in the handler.
+    /// ex: ⍣⋅⋕∘ 5 "12"  # No error
+    ///   : ⍣⋅⋕∘ 5 "dog" # Error
+    /// [try] works with function packs of more than 2 functions. Each function will by tried in order, and all functions after the first will be passed the error value from the previous function.
+    /// ex: F ← ⍣(⋕|{⊂2⊙∘}|{⊙∘})
+    ///   : F "5"
+    ///   : F [1]
+    ///   : F "hi"
     ([2], Try, Misc, ("try", '⍣')),
     /// Throw an error if a condition is not met
     ///
@@ -1877,7 +1877,7 @@ primitive!(
     /// ex! ⍤. =8 9
     ///
     /// Errors thrown by [assert] can be caught with [try].
-    (2(0), Assert, Misc, ("assert", '⍤')),
+    (2(0), Assert, Misc, ("assert", '⍤'), impure),
     /// Set a function to recur to
     ///
     /// A function must have been set with [this] before calling [recur].
@@ -2149,6 +2149,8 @@ primitive!(
     /// ex: # Experimental!
     ///   : ≡get [1 3 3 2] ¤ map 1_2_3 4_5_6
     ///
+    /// Map keys are stored as metadata on the values array. For this reason, they cannot be put in arrays together without being [box]ed, as the metadata for each map would be lost.
+    ///
     /// Regardless of the size of the map, operations on it have O(1) amortized time complexity.
     /// In this example, we time [get] and [insert] operations on maps from 10 entries up to 100,000 entries.
     /// ex: # Experimental!
@@ -2395,7 +2397,7 @@ primitive!(
     /// ex: °csv "#,Count\n1,5\n2,21\n3,8\n"
     /// The decoding result will always be a rank-`2` array of boxed strings.
     /// You can use `each``try``parse``gap``identity` to convert the strings that represent numbers.
-    /// ex: ∵⍣⋕⋅∘ °csv "#,Count\n1,5\n2,21\n3,8\n"
+    /// ex: ∵⍣⋕∘ °csv "#,Count\n1,5\n2,21\n3,8\n"
     /// If you know there are headers, you can use [un][join] to separate them.
     /// ex: ⊙⋕°⊂ °csv "#,Count\n1,5\n2,21\n3,8\n"
     /// You can easily create a [map] with the headers as keys.
@@ -2474,7 +2476,6 @@ macro_rules! impl_primitive {
 
 impl_primitive!(
     // Inverses
-    (0, UnPop),
     (1, Asin),
     (1, UnBits),
     (1, UnWhere),
@@ -2492,10 +2493,9 @@ impl_primitive!(
     (0[1], UnDump, impure),
     (1, Primes),
     (1, UnBox),
-    (1(2), UnJoin),
-    (2, UnDrop),
+    (2(2), UnJoin),
     (1, UnCsv),
-    (2, UnKeep),
+    (2(0), MatchPattern),
     // Unders
     (3, UndoSelect),
     (3, UndoPick),
