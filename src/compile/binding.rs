@@ -95,7 +95,12 @@ impl Compiler {
             }
             let function = self.make_function(FunctionId::Named(name.clone()), sig, instrs);
             self.scope.names.insert(name.clone(), local);
-            (self.asm).add_global_at(local, Global::Macro, Some(span.clone()), comment.clone());
+            (self.asm).add_global_at(
+                local,
+                BindingKind::Macro,
+                Some(span.clone()),
+                comment.clone(),
+            );
             let mac = ArrayMacro {
                 function,
                 names: self.scope.names.clone(),
@@ -129,7 +134,12 @@ impl Compiler {
         }
         if placeholder_count > 0 || ident_margs > 0 {
             self.scope.names.insert(name.clone(), local);
-            (self.asm).add_global_at(local, Global::Macro, Some(span.clone()), comment.clone());
+            (self.asm).add_global_at(
+                local,
+                BindingKind::Macro,
+                Some(span.clone()),
+                comment.clone(),
+            );
             let mut words = binding.words.clone();
             recurse_words(&mut words, &mut |word| match &word.value {
                 Word::Ref(r) => {
@@ -324,10 +334,11 @@ impl Compiler {
                         let val = val.clone();
                         self.asm.instrs.pop();
                         self.asm.bind_const(local, Some(val), span_index, comment);
-                        let last_slice = self.asm.top_slices.last_mut().unwrap();
-                        last_slice.len -= 1;
-                        if last_slice.len == 0 {
-                            self.asm.top_slices.pop();
+                        if let Some(last_slice) = self.asm.top_slices.last_mut() {
+                            last_slice.len -= 1;
+                            if last_slice.len == 0 {
+                                self.asm.top_slices.pop();
+                            }
                         }
                     } else {
                         self.asm.bind_const(local, None, span_index, comment);
@@ -365,7 +376,7 @@ impl Compiler {
                         binding.name.span.clone(),
                         format!(
                             "Cannot infer function signature: {e}{}",
-                            if e.ambiguous {
+                            if e.kind == SigCheckErrorKind::Ambiguous {
                                 ". A signature can be declared after the `←`."
                             } else {
                                 ""
@@ -391,11 +402,11 @@ impl Compiler {
             self.next_global += 1;
             let local = LocalName {
                 index: global_index,
-                public: false,
+                public: true,
             };
             self.asm.add_global_at(
                 local,
-                Global::Module(module_path.clone()),
+                BindingKind::Module(module_path.clone()),
                 Some(name.span.clone()),
                 prev_com.or_else(|| imported.comment.clone()),
             );
@@ -415,7 +426,7 @@ impl Compiler {
                     item.value.clone(),
                     LocalName {
                         index: local.index,
-                        public: false,
+                        public: true,
                     },
                 );
             } else {

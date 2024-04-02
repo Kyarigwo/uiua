@@ -7,10 +7,10 @@ use std::{
 
 use bitflags::bitflags;
 use ecow::{EcoString, EcoVec};
-use serde::*;
+use serde::{de::DeserializeOwned, *};
 
 use crate::{
-    algorithm::map::MapKeys,
+    algorithm::map::{MapKeys, EMPTY_NAN, TOMBSTONE_NAN},
     cowslice::{cowslice, CowSlice},
     grid_fmt::GridFmt,
     Boxed, Complex, HandleKind, Shape, Uiua, Value,
@@ -18,47 +18,23 @@ use crate::{
 
 /// Uiua's array type
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "T: Clone + Serialize",
-    deserialize = "T: Clone + Deserialize<'de>"
-))]
+#[serde(
+    from = "ArrayRep<T>",
+    into = "ArrayRep<T>",
+    bound(
+        serialize = "T: ArrayValueSer + Serialize",
+        deserialize = "T: ArrayValueSer + Deserialize<'de>"
+    )
+)]
 #[repr(C)]
 pub struct Array<T> {
-    #[serde(rename = "s", default, skip_serializing_if = "<[_]>::is_empty")]
     pub(crate) shape: Shape,
-    #[serde(rename = "d", default, skip_serializing_if = "<[_]>::is_empty")]
     pub(crate) data: CowSlice<T>,
-    #[serde(
-        rename = "m",
-        flatten,
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "meta_ser"
-    )]
     pub(crate) meta: Option<Arc<ArrayMeta>>,
 }
 
-mod meta_ser {
-    use super::*;
-    pub fn serialize<S: Serializer>(
-        meta: &Option<Arc<ArrayMeta>>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        if let Some(meta) = meta {
-            meta.serialize(s)
-        } else {
-            s.serialize_none()
-        }
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<Option<Arc<ArrayMeta>>, D::Error> {
-        Ok(Option::<ArrayMeta>::deserialize(d)?.map(Arc::new))
-    }
-}
-
 /// Non-shape metadata for an array
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrayMeta {
     /// The label
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,7 +55,7 @@ pub struct ArrayMeta {
 
 bitflags! {
     /// Flags for an array
-    #[derive(Clone, Copy, Default, Serialize, Deserialize)]
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub struct ArrayFlags: u8 {
         /// No flags
         const NONE = 0;
@@ -318,7 +294,12 @@ impl<T> Array<T> {
         }
     }
     /// Get an iterator over the row slices of the array
-    pub fn row_slices(&self) -> impl ExactSizeIterator<Item = &[T]> + DoubleEndedIterator + Clone {
+    pub fn row_slices(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &[T]> + DoubleEndedIterator + Clone + Send + Sync
+    where
+        T: Send + Sync,
+    {
         (0..self.row_count()).map(move |row| self.row_slice(row))
     }
     /// Get a slice of a row
@@ -563,6 +544,9 @@ impl<T: ArrayValue + ArrayCmp<U>, U: ArrayValue> PartialEq<Array<U>> for Array<T
         if self.shape() != other.shape() {
             return false;
         }
+        if self.map_keys() != other.map_keys() {
+            return false;
+        }
         self.data
             .iter()
             .zip(&other.data)
@@ -597,6 +581,9 @@ impl<T: ArrayValue> Ord for Array<T> {
 
 impl<T: ArrayValue> Hash for Array<T> {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
+        if let Some(keys) = self.map_keys() {
+            keys.hash(hasher);
+        }
         if let Some(scalar) = self.as_scalar() {
             if let Some(value) = scalar.nested_value() {
                 value.hash(hasher);
@@ -683,7 +670,7 @@ impl FromIterator<String> for Array<Boxed> {
 /// A trait for types that can be used as array elements
 #[allow(unused_variables)]
 pub trait ArrayValue:
-    Clone + fmt::Debug + fmt::Display + GridFmt + ArrayCmp + Send + Sync + 'static
+    Default + Clone + fmt::Debug + fmt::Display + GridFmt + ArrayCmp + Send + Sync + 'static
 {
     /// The type name
     const NAME: &'static str;
@@ -730,6 +717,8 @@ pub trait ArrayValue:
 /// A NaN value that always compares as equal
 pub const WILDCARD_NAN: f64 =
     unsafe { std::mem::transmute(0x7ff8_0000_0000_0000u64 | 0x0000_0000_0000_0003) };
+/// A character value used as a wildcard that will equal any character
+pub const WILDCARD_CHAR: char = '\u{E000}';
 
 impl ArrayValue for f64 {
     const NAME: &'static str = "number";
@@ -878,6 +867,9 @@ impl ArrayCmp for Complex {
 }
 
 impl ArrayCmp for char {
+    fn array_eq(&self, other: &Self) -> bool {
+        *self == WILDCARD_CHAR || *other == WILDCARD_CHAR || *self == *other
+    }
     fn array_cmp(&self, other: &Self) -> Ordering {
         self.cmp(other)
     }
@@ -921,6 +913,167 @@ impl<'a> fmt::Display for FormatShape<'a> {
             write!(f, "{dim}")?;
         }
         write!(f, "]")
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[serde(bound(
+    serialize = "T: ArrayValueSer + Serialize",
+    deserialize = "T: ArrayValueSer + Deserialize<'de>"
+))]
+enum ArrayRep<T: ArrayValueSer> {
+    Scalar(T),
+    List(T::Collection),
+    Metaless(Shape, T::Collection),
+    Full(
+        Shape,
+        T::Collection,
+        #[serde(with = "meta_ser")] Arc<ArrayMeta>,
+    ),
+}
+
+impl<T: ArrayValueSer> From<ArrayRep<T>> for Array<T> {
+    fn from(rep: ArrayRep<T>) -> Self {
+        match rep {
+            ArrayRep::Scalar(data) => Self::new([], [data]),
+            ArrayRep::List(data) => {
+                let data = T::make_data(data);
+                Self::new(data.len(), data)
+            }
+            ArrayRep::Metaless(shape, data) => {
+                let data = T::make_data(data);
+                Self::new(shape, data)
+            }
+            ArrayRep::Full(shape, data, meta) => {
+                let data = T::make_data(data);
+                Self {
+                    shape,
+                    data,
+                    meta: Some(meta),
+                }
+            }
+        }
+    }
+}
+
+impl<T: ArrayValueSer> From<Array<T>> for ArrayRep<T> {
+    fn from(mut arr: Array<T>) -> Self {
+        if let Some(meta) = arr.meta.take().filter(|meta| **meta != DEFAULT_META) {
+            return ArrayRep::Full(arr.shape, T::make_collection(arr.data), meta);
+        }
+        match arr.rank() {
+            0 => ArrayRep::Scalar(arr.data[0].clone()),
+            1 => ArrayRep::List(T::make_collection(arr.data)),
+            _ => ArrayRep::Metaless(arr.shape, T::make_collection(arr.data)),
+        }
+    }
+}
+
+trait ArrayValueSer: Clone {
+    type Collection: Serialize + DeserializeOwned;
+    fn make_collection(data: CowSlice<Self>) -> Self::Collection;
+    fn make_data(collection: Self::Collection) -> CowSlice<Self>;
+}
+
+macro_rules! array_value_ser {
+    ($ty:ty) => {
+        impl ArrayValueSer for $ty {
+            type Collection = CowSlice<$ty>;
+            fn make_collection(data: CowSlice<Self>) -> Self::Collection {
+                data
+            }
+            fn make_data(collection: Self::Collection) -> CowSlice<Self> {
+                collection
+            }
+        }
+    };
+}
+
+array_value_ser!(u8);
+array_value_ser!(isize);
+array_value_ser!(usize);
+array_value_ser!(Boxed);
+array_value_ser!(Complex);
+
+impl ArrayValueSer for f64 {
+    type Collection = Vec<F64Rep>;
+    fn make_collection(data: CowSlice<Self>) -> Self::Collection {
+        data.iter().map(|&n| n.into()).collect()
+    }
+    fn make_data(collection: Self::Collection) -> CowSlice<Self> {
+        collection.into_iter().map(f64::from).collect()
+    }
+}
+
+impl ArrayValueSer for char {
+    type Collection = String;
+    fn make_collection(data: CowSlice<Self>) -> Self::Collection {
+        data.iter().collect()
+    }
+    fn make_data(collection: Self::Collection) -> CowSlice<Self> {
+        collection.chars().collect()
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum F64Rep {
+    #[serde(rename = "NaN")]
+    NaN,
+    #[serde(rename = "empty")]
+    MapEmpty,
+    #[serde(rename = "tomb")]
+    MapTombstone,
+    #[serde(rename = "∞")]
+    Infinity,
+    #[serde(rename = "-∞")]
+    NegInfinity,
+    #[serde(untagged)]
+    Num(f64),
+}
+
+impl From<f64> for F64Rep {
+    fn from(n: f64) -> Self {
+        if n.is_nan() {
+            if n.to_bits() == EMPTY_NAN.to_bits() {
+                Self::MapEmpty
+            } else if n.to_bits() == TOMBSTONE_NAN.to_bits() {
+                Self::MapTombstone
+            } else {
+                Self::NaN
+            }
+        } else if n.is_infinite() {
+            if n.is_sign_positive() {
+                Self::Infinity
+            } else {
+                Self::NegInfinity
+            }
+        } else {
+            Self::Num(n)
+        }
+    }
+}
+
+impl From<F64Rep> for f64 {
+    fn from(rep: F64Rep) -> Self {
+        match rep {
+            F64Rep::NaN => f64::NAN,
+            F64Rep::MapEmpty => EMPTY_NAN,
+            F64Rep::MapTombstone => TOMBSTONE_NAN,
+            F64Rep::Infinity => f64::INFINITY,
+            F64Rep::NegInfinity => f64::NEG_INFINITY,
+            F64Rep::Num(n) => n,
+        }
+    }
+}
+
+mod meta_ser {
+    use super::*;
+    pub fn serialize<S: Serializer>(meta: &Arc<ArrayMeta>, s: S) -> Result<S::Ok, S::Error> {
+        meta.serialize(s)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Arc<ArrayMeta>, D::Error> {
+        ArrayMeta::deserialize(d).map(Arc::new)
     }
 }
 

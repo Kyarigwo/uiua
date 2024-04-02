@@ -1275,17 +1275,17 @@ impl Value {
         #[cfg(feature = "csv")]
         {
             let mut buf = Vec::new();
-            let mut writer = csv::Writer::from_writer(&mut buf);
+            let mut writer = csv::WriterBuilder::new()
+                .flexible(true)
+                .from_writer(&mut buf);
             match self.rank() {
-                0 => {
-                    writer
-                        .write_record([self.format()])
-                        .map_err(|e| env.error(e))?;
-                }
+                0 => writer
+                    .write_record([self.format()])
+                    .map_err(|e| env.error(e))?,
                 1 => {
                     for row in self.rows() {
                         writer
-                            .write_record([row.format()])
+                            .write_record(row.unboxed().rows().map(|v| v.format()))
                             .map_err(|e| env.error(e))?;
                     }
                 }
@@ -1311,8 +1311,10 @@ impl Value {
         {
             let mut reader = csv::ReaderBuilder::new()
                 .has_headers(false)
+                .flexible(true)
                 .from_reader(_csv.as_bytes());
-            env.with_fill("".into(), |env| {
+            let fill = env.value_fill().cloned().unwrap_or_else(|| "".into());
+            env.with_fill(fill, |env| {
                 let mut rows = Vec::new();
                 for result in reader.records() {
                     let record = result.map_err(|e| env.error(e))?;

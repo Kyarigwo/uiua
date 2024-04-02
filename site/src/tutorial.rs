@@ -702,7 +702,7 @@ fn TutorialTypes() -> impl IntoView {
         <p>"Raw strings that follow each other form multi-line strings."</p>
         <Editor example="$ Hello\n$ World!"/>
         <p>"This style of string is useful when your string contains a lot of quotes that you don't want to escape."</p>
-        <Editor example="$ An then she was like, \"No way!\"\n$ And I was like, \"Way...\""/>
+        <Editor example="$ And then she was like, \"No way!\"\n$ And I was like, \"Way...\""/>
         <p>"Characters in character or string literals can also be specified with 2 or 4 hex digits by using escape codes "<code>"\\x"</code>" and "<code>"\\u"</code>" respectively."</p>
         <Editor example="\"\\x41\\x42\\x43\""/>
         <Editor example="@\\u2665"/>
@@ -765,14 +765,6 @@ fn TutorialTypes() -> impl IntoView {
 
         <Challenge
             number=1
-            prompt="capitalizes an all-lowercase string"
-            example="\"hello\""
-            answer="-32"
-            tests={&["\"uiua\"", "\"gato\"", "\"tacit\""]}
-            hidden="\"wowza\""/>
-
-        <Challenge
-            number=2
             prompt="increments the first character of a string"
             example="\"`rray\""
             answer="⊂:↘1:+1⊢."
@@ -1317,7 +1309,7 @@ fn TutorialPatternMatching() -> impl IntoView {
         <p><Prim prim=Try/>" accepts arbitrarily long function packs, so you can match as many patterns as you want in a simple way."</p>
         <p>"In this example, we run different code depending on which pattern matches."</p>
         <Editor example="F ← ⍣(×10°[1⊙3]|°(⊂5)|⇌)\nF [5 6 7]\nF [1 2 3]\nF \"abc\""/>
-        <p>"Having more or longer patterns may be easier to read if each pattern gets it's own line."</p>
+        <p>"Having more or longer patterns may be easier to read if each pattern gets its own line."</p>
         <Editor example="F ← ⍣(\n  ×10 °[1⊙3]\n| °(⊂5)\n| ⇌\n)"/>
 
         <Hd id="format-string-patterns">"Format String Patterns"</Hd>
@@ -1325,7 +1317,7 @@ fn TutorialPatternMatching() -> impl IntoView {
         <Editor example="°$\"_, _, _\" \"1, 2, 3\""/>
         <Editor example="°$\"_, _, _\" \"1, 2, 3, 4, 5\""/>
         <Editor example="°$\"Hello, _!\" \"Hello, World!\""/>
-        <p>"More precisely, format string patterns form a regex that replaces all "<code>"_"</code>"s from the format string with "<code>"(.+?|.*)"</code>"."</p>
+        <p>"More precisely, format string patterns form a regex that replaces all "<code>"_"</code>"s from the format string with "<code>"(.+?|.*)"</code>", where "<code>"."</code>" also matches newlines."</p>
 
         <Hd id="challenges">"Challenges"</Hd>
 
@@ -1599,11 +1591,11 @@ F!!!+×⊂ [1 2 3][4 5 6]"/>
         <p>"Here is a basic example that simply prints its operands. It returns the number "<code>"5"</code>" as the actual generated code."</p>
         <Editor example="F‼ ←^ \"5\" &pf\nF‼⊂(+1)"/>
         <p>"As you can see, the operands are passed to the function as an array of boxed strings."</p>
-        <p>"Array macros may be passed a function pack operand. Each operand from the pack will put in the array."</p>
+        <p>"Array macros may be passed a function pack operand. Each operand from the pack will be put in the array."</p>
         <Editor example="F! ←^ $\"_\"\nF!(+|-|×|÷)"/>
         <p>"The array macro's function must return either a string or an array of boxed strings. This value will be converted back to Uiua code and compiled as normal."</p>
-        <p>"Format strings can help a lot in generating new code. For example, if we wanted to make a version of "<Prim prim=Both/>" that calls its function on an arbitrary number of sets of values, we could use "<Prim prim=Keep/>" and "<Prim prim=Bracket/>"."</p>
-        <Editor example="All‼ ←^ $\"⊓(_)\" /$\"_|_\" ▽⋕ °{⊙∘}\n[All‼3+ 1 2 3 4 5 6]"/>
+        <p>"Format strings can help a lot in generating new code. For example, if we wanted to make a version of "<Prim prim=Both/>" that calls its function on an arbitrary number of sets of values, we could use "<Prim prim=Reshape/>" and "<Prim prim=Bracket/>"."</p>
+        <Editor example="All‼ ←^ $\"⊓(_)\" /$\"_|_\" ↯⋕ °{⊙∘}\n[All‼3+ 1 2 3 4 5 6]"/>
         <p>"First, we extract the two operands: the count and the function. The count comes in as a string, so we have to "<Prim prim=Parse/>" it before using "<Prim prim=Keep/>" to make an array of copies of the function."</p>
         <p>"We use "<Prim prim=Reduce/>" with a format string to form the branches of a function pack, then use another format string to put them in "<Prim prim=Bracket/>"."</p>
         <p>"The resulting string is then compiled as Uiua code."</p>

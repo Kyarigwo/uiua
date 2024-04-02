@@ -4,6 +4,7 @@ Uiua is not yet stable.
 
 ## 0.10.0 - 2024-??-??
 This version is not yet released. If you are reading this on the website, then these changes are live here.
+<!-- You can find the release announcement [here](https://uiua.org/blog/uiua-0.10.0). -->
 ### Language
 - **Breaking Change** - Multiline strings are now also *raw strings* which do not require escaping
   - They are no longer format strings by default
@@ -22,6 +23,7 @@ This version is not yet released. If you are reading this on the website, then t
 - Git modules are no longer experimental
   - Modules are added automatically as Git submodules when imported
   - See the [Modules](https://uiua.org/tutorial/modules#git-modules) tutorial for more information
+- [`map`](https://uiua.org/docs/map) and related functions [`insert`](https://uiua.org/docs/insert), [`has`](https://uiua.org/docs/has), [`get`](https://uiua.org/docs/get), and [`remove`](https://uiua.org/docs/remove) are no longer experimental
 - Add the [`mask ⦷`](https://uiua.org/docs/mask) function, which creates a mask of occurrences of one array in another
   - This works similarly to [`find ⌕`](https://uiua.org/docs/find), but is better when you need a mask or to distinguish between adjacent occurrences
 - Change [`sine ∿`](https://uiua.org/docs/sine)'s glyph
@@ -38,6 +40,7 @@ This version is not yet released. If you are reading this on the website, then t
 - [`inventory ⍚`](https://uiua.org/docs/inventory) can now take 3 or more arrays
 - [`repeat ⍥`](https://uiua.org/docs/repeat) can now take non-scalar repetition counts
   - This repeats the function a different number of times for each row of the inputs
+- [`select ⊏`](https://uiua.org/docs/select) can now be used with [`un °`](https://uiua.org/docs/un) to separate into [`classify ⊛`](https://uiua.org/docs/classify) and [`deduplicate ◴`](https://uiua.org/docs/deduplicate)
 - Characters can now be [`multiply ×`](https://uiua.org/docs/multiply)d or [`divide ÷`](https://uiua.org/docs/divide)d by numbers to possibly toggle their case
 - Add the [`csv`](https://uiua.org/docs/csv) function, which encodes and decodes CSV data
 - Add the [`&clget`](https://uiua.org/docs/&clget) and [`&clset`](https://uiua.org/docs/&clset) system functions, which allow copying and pasting text to and from the system clipboard
@@ -50,8 +53,11 @@ This version is not yet released. If you are reading this on the website, then t
   - Stack macros are now [hygienic](https://en.wikipedia.org/wiki/Hygienic_macro)
 - Add array macros, which allow code to be generated and manipulated at compile time as strings
   - These are specified with a `^` immediately following a binding's arrow
-- Add the wildcard constant `W`, which matches any number
-  - This works well with [`match ≍`](https://uiua.org/docs/match), [`find ⌕`](https://uiua.org/docs/find), and [`mask ⦷`](https://uiua.org/docs/mask)
+  - They are documented in the [Macros](https://uiua.org/tutorial/macros) tutorial
+- [`un °`](https://uiua.org/docs/un) [`pop ◌`](https://uiua.org/docs/pop) can now be used to retrieve the [`fill ⬚`](https://uiua.org/docs/fill) value
+  - See more details in [`fill ⬚`](https://uiua.org/docs/fill)'s documentation
+- Add the wildcard constant `W`, which matches any number, and `@\W`, which matches any character
+  - These work well with [`match ≍`](https://uiua.org/docs/match), [`find ⌕`](https://uiua.org/docs/find), and [`mask ⦷`](https://uiua.org/docs/mask)
 - Add the experimental [`coordinate ⟔`](https://uiua.org/docs/coordinate) function, which searches an array for a value and returns a multidimensional index
   - [`coordinate ⟔`](https://uiua.org/docs/coordinate) is to [`pick ⊡`](https://uiua.org/docs/pick) as [`indexof ⊗`](https://uiua.org/docs/indexof) is to [`select ⊏`](https://uiua.org/docs/select)
 - Experimental function strands now use the `‿` character, which formats from `__`
@@ -60,10 +66,18 @@ This version is not yet released. If you are reading this on the website, then t
   - This is useful in array macros
 - Add `# No inline!` semantic comment, which prevents a function and its callers from being inlined
   - This enables better stack traces on errors
+- Deprecate [`bind`](https://uiua.org/docs/bind)
+  - It undermines the priniciples of the language
+  - It makes certain optimizations impossible
+  - [`fill ⬚`](https://uiua.org/docs/fill) and/or [`map`](https://uiua.org/docs/map) can be used to achieve similar effects
 - Deprecate [`deal`](https://uiua.org/docs/deal)
   - It is rarely used and easy to express with other functions
+- Deprecate experimental [`shapes`](https://uiua.org/docs/shapes) and [`types`](https://uiua.org/docs/types) modifiers in favor of pattern matching
+- Remove `cross ⊠` for good
 - Remove `unpack ⊐` for good
+- Remove `rectify ⌅` for good
 - Remove `&i` for good
+- Make [`reduce /`](https://uiua.org/docs/reduce) with a monadic function a hard error
 ### Interpreter
 - Code is now analyzed for purity
   - All pure top-level expressions will attempt to evaluate at compile time
@@ -86,19 +100,26 @@ This version is not yet released. If you are reading this on the website, then t
 - Add the `--file <file>` option to the `uiua repl` command
   - This runs a file before starting the REPL
 - Improve the supported binding type coverage of [`&ffi`](https://uiua.org/docs/&ffi)
+- Add warnings for when a loop in an array may have a variable signature
 - Various performance improvements
+  - Optimize and multithread `⊞(/+×)`, which is a common component of matrix multiplication
 - Lots of bug and crash fixes
 ### Website
 - Tutorials
   - Add a [Working with Strings](https://uiua.org/tutorial/strings) tutorial
   - Add array macros to the [Macros](https://uiua.org/tutorial/macros) tutorial
   - Add the [Pattern Matching](https://uiua.org/tutorial/patternmatching) tutorial
+- Add some modifier compatibility tables to documentation
+  - [`un °`](https://uiua.org/docs/un)
+  - [`under ⍜`](https://uiua.org/docs/under)
+  - [`fill ⬚`](https://uiua.org/docs/fill)
 - Hide experimental glyphs in the editor by default
   - They can be toggled on in the settings
 - An `# Experimental!` comment can now be easily inserted via a settings button or with `Ctrl+E`
 - Add horizontal scrolling to pad output
 - Pad tabs are now given titles according to their contents
 - The pad now renders strings that are SVG as images
+- Add a pad setting for autoplaying audio
 
 ## 0.9.5 - 2024-02-28
 ### Interpreter
@@ -354,7 +375,7 @@ This version is not yet released. If you are reading this on the website, then t
 - Add an *experimental* distinction for some functions/modifiers
   - Experimental features are opt-in and must be enabled by putting an `# Experimental!` comment at the top of a file
 - Add the experimental [`all ⋔`](https://uiua.org/docs/all) modifier, which is a variadic generalization of [`both ∩`](https://uiua.org/docs/both)
-- Add the experimental [`rectify ⌅`](https://uiua.org/docs/rectify) modifier, which sets a function's inverse to itself
+- Add the experimental `rectify ⌅` modifier, which sets a function's inverse to itself
 - Add the experimental [`setinv`](https://uiua.org/docs/setinv) modifier, which sets the inverse of a function
 - Add the experimental [`setunder`](https://uiua.org/docs/setund) modifier, which sets the [`under ⍜`](https://uiua.org/docs/under)-compatible inverse of a function
 - Add the experimental [`this ↬`](https://uiua.org/docs/this) modifier, which sets a function to recur to

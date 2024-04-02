@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 
 use crate::{
     array::{Array, ArrayValue},
+    cowslice::CowSlice,
     value::Value,
     Boxed, Function, Primitive, Shape, Signature, Uiua, UiuaResult,
 };
@@ -86,10 +87,17 @@ fn repeat_impl(f: Function, n: f64, env: &mut Uiua) -> UiuaResult {
                 Primitive::Repeat.format()
             )));
         }
-        if sig.args != sig.outputs {
+        if !env.rt.array_stack.is_empty() && sig.args > sig.outputs {
             return Err(env.error(format!(
-                "Converging {}'s function must have a net stack change of 0, \
-                but its signature is {sig}",
+                "Converging {}'s function must have a net positive stack \
+                change inside an array, but its signature is {sig}",
+                Primitive::Repeat.format()
+            )));
+        }
+        if env.rt.array_stack.is_empty() && sig.args != sig.outputs {
+            return Err(env.error(format!(
+                "Converging {}'s function must have a net stack change of 0 \
+                outside an array, but its signature is {sig}",
                 Primitive::Repeat.format()
             )));
         }
@@ -122,37 +130,38 @@ fn repeat_impl(f: Function, n: f64, env: &mut Uiua) -> UiuaResult {
 
 pub fn do_(env: &mut Uiua) -> UiuaResult {
     crate::profile_function!();
-    let f = env.pop_function()?;
-    let g = env.pop_function()?;
-    let f_sig = f.signature();
-    let g_sig = g.signature();
-    if g_sig.outputs < 1 {
+    let body = env.pop_function()?;
+    let cond = env.pop_function()?;
+    let body_sig = body.signature();
+    let cond_sig = cond.signature();
+    if cond_sig.outputs < 1 {
         return Err(env.error(format!(
             "Do's condition function must return at least 1 value, \
-            but its signature is {g_sig}"
+            but its signature is {cond_sig}"
         )));
     }
-    let copy_count = g_sig.args.saturating_sub(g_sig.outputs - 1);
-    let g_sub_sig = Signature::new(g_sig.args, g_sig.outputs + copy_count - 1);
-    let comp_sig = f_sig.compose(g_sub_sig);
+    let copy_count = cond_sig.args.saturating_sub(cond_sig.outputs - 1);
+    let cond_sub_sig = Signature::new(cond_sig.args, cond_sig.outputs + copy_count - 1);
+    let comp_sig = body_sig.compose(cond_sub_sig);
     match comp_sig.args.cmp(&comp_sig.outputs) {
         Ordering::Less if env.rt.array_stack.is_empty() => {
             return Err(env.error(format!(
                 "Do's functions cannot have a positive net stack \
                 change outside an array, but the composed signature of \
-                {f_sig} and {g_sig}, minus the condition, is {comp_sig}"
+                {body_sig} and {cond_sig}, minus the condition, is {comp_sig}"
             )))
         }
         Ordering::Greater => {
             return Err(env.error(format!(
                 "Do's functions cannot have a negative net stack \
-                change, but the composed signature of {f_sig} and \
-                {g_sig}, minus the condition, is {comp_sig}"
+                change, but the composed signature of {body_sig} and \
+                {cond_sig}, minus the condition, is {comp_sig}"
             )))
         }
         _ => {}
     }
     loop {
+        // Make sure there are enough values
         if env.stack().len() < copy_count {
             // Pop until it fails
             for i in 0..copy_count {
@@ -160,18 +169,16 @@ pub fn do_(env: &mut Uiua) -> UiuaResult {
             }
         }
         // Copy necessary condition args
-        for _ in 0..copy_count {
-            env.push(env.stack()[env.stack().len() - copy_count].clone());
-        }
+        env.dup_n(copy_count)?;
         // Call condition
-        env.call(g.clone())?;
+        env.call(cond.clone())?;
         // Break if condition is false
         let cond = (env.pop("do condition")?).as_bool(env, "Do condition must be a boolean")?;
         if !cond {
             break;
         }
         // Call body
-        env.call(f.clone())?;
+        env.call(body.clone())?;
     }
     Ok(())
 }
@@ -189,23 +196,75 @@ pub fn partition(env: &mut Uiua) -> UiuaResult {
 }
 
 impl Value {
-    fn partition_groups(self, markers: Array<isize>, env: &Uiua) -> UiuaResult<Vec<Self>> {
-        Ok(match self {
-            Value::Num(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
-            Value::Byte(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
-            Value::Complex(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
-            Value::Char(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
-            Value::Box(arr) => (arr.partition_groups(markers, env)?.map(Into::into)).collect(),
-        })
-    }
-}
-
-impl<T: ArrayValue> Array<T> {
     fn partition_groups(
         self,
         markers: Array<isize>,
         env: &Uiua,
-    ) -> UiuaResult<impl Iterator<Item = Self>> {
+    ) -> UiuaResult<Box<dyn ExactSizeIterator<Item = Self>>> {
+        Ok(match self {
+            Value::Num(arr) => arr.partition_groups(markers, env)?,
+            Value::Byte(arr) => arr.partition_groups(markers, env)?,
+            Value::Complex(arr) => arr.partition_groups(markers, env)?,
+            Value::Char(arr) => arr.partition_groups(markers, env)?,
+            Value::Box(arr) => arr.partition_groups(markers, env)?,
+        })
+    }
+}
+
+struct PartitionIter<T> {
+    len: usize,
+    curr: usize,
+    markers: CowSlice<isize>,
+    source: Array<T>,
+}
+
+impl<T> Iterator for PartitionIter<T>
+where
+    T: Clone,
+    Array<T>: Into<Value>,
+{
+    type Item = Value;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.curr < self.markers.len() {
+            let marker = self.markers[self.curr];
+            if marker <= 0 {
+                self.curr += 1;
+            } else {
+                let start = self.curr;
+                while self.curr < self.markers.len() && self.markers[self.curr] == marker {
+                    self.curr += 1;
+                }
+                let end = self.curr;
+                let data = self.source.data.slice(start..end);
+                let mut shape = self.source.shape.clone();
+                shape[0] = end - start;
+                return Some(Array::new(shape, data).into());
+            }
+        }
+        None
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len - self.curr;
+        (len, Some(len))
+    }
+}
+
+impl<T> ExactSizeIterator for PartitionIter<T>
+where
+    T: Clone,
+    Array<T>: Into<Value>,
+{
+}
+
+impl<T: ArrayValue> Array<T>
+where
+    Array<T>: Into<Value>,
+{
+    fn partition_groups(
+        self,
+        markers: Array<isize>,
+        env: &Uiua,
+    ) -> UiuaResult<Box<dyn ExactSizeIterator<Item = Value>>> {
         if !self.shape().starts_with(markers.shape()) {
             return Err(env.error(format!(
                 "Cannot partition array of shape {} with markers of shape {}",
@@ -214,17 +273,21 @@ impl<T: ArrayValue> Array<T> {
             )));
         }
         let mut groups = Vec::new();
-        if markers.rank() == 1 {
+        Ok(if markers.rank() == 1 {
+            let mut count = 0;
             let mut last_marker = isize::MAX;
-            for (row, marker) in self.into_rows().zip(markers.data) {
-                if marker > 0 {
-                    if marker != last_marker {
-                        groups.push(Vec::new());
-                    }
-                    groups.last_mut().unwrap().push(row);
+            for &marker in &markers.data {
+                if marker > 0 && marker != last_marker {
+                    count += 1;
                 }
                 last_marker = marker;
             }
+            Box::new(PartitionIter {
+                len: count,
+                curr: 0,
+                markers: markers.data,
+                source: self,
+            })
         } else {
             let row_shape: Shape = self.shape()[markers.rank()..].into();
             let indices = multi_partition_indices(markers);
@@ -235,8 +298,13 @@ impl<T: ArrayValue> Array<T> {
                 }
                 groups.push(group);
             }
-        }
-        Ok(groups.into_iter().map(Array::from_row_arrays_infallible))
+            Box::new(
+                groups
+                    .into_iter()
+                    .map(Array::from_row_arrays_infallible)
+                    .map(Into::into),
+            )
+        })
     }
 }
 
@@ -555,20 +623,24 @@ pub fn undo_group_part2(env: &mut Uiua) -> UiuaResult {
     Ok(())
 }
 
-fn collapse_groups(
+fn collapse_groups<I>(
     prim: Primitive,
-    get_groups: impl Fn(Value, Array<isize>, &Uiua) -> UiuaResult<Vec<Value>>,
+    get_groups: impl Fn(Value, Array<isize>, &Uiua) -> UiuaResult<I>,
     agg_indices_error: &'static str,
     red_indices_error: &'static str,
     env: &mut Uiua,
-) -> UiuaResult {
+) -> UiuaResult
+where
+    I: IntoIterator<Item = Value>,
+    I::IntoIter: ExactSizeIterator,
+{
     let f = env.pop_function()?;
     let sig = f.signature();
     match (sig.args, sig.outputs) {
         (0 | 1, outputs) => {
             let indices = env.pop(1)?.as_integer_array(env, agg_indices_error)?;
             let values = env.pop(2)?;
-            let groups = get_groups(values, indices, env)?;
+            let groups = get_groups(values, indices, env)?.into_iter();
             let mut rows = multi_output(outputs, Vec::with_capacity(groups.len()));
             env.without_fill(|env| -> UiuaResult {
                 for group in groups {

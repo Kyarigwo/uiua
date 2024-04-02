@@ -158,6 +158,7 @@ impl fmt::Display for ImplPrimitive {
         use ImplPrimitive::*;
         use Primitive::*;
         match self {
+            UnPop => write!(f, "{Un}{Pop}"),
             UnBits => write!(f, "{Un}{Bits}"),
             UnWhere => write!(f, "{Un}{Where}"),
             UnCouple => write!(f, "{Un}{Couple}"),
@@ -333,32 +334,35 @@ impl Primitive {
     }
     pub(crate) fn deprecation_suggestion(&self) -> Option<String> {
         use Primitive::*;
-        match self {
-            Cross => Some(format!("use {} instead", Table.format())),
-            Cascade => Some(format!("use {} or {} instead", Fork.format(), On.format())),
-            Rectify => Some(String::new()),
-            All => Some(String::new()),
-            This | Recur => Some("use the name of a binding to recur instead".into()),
-            Sys(SysOp::GifDecode) => Some(format!(
+        Some(match self {
+            Cascade => format!("use {} or {} instead", Fork.format(), On.format()),
+            All => String::new(),
+            This | Recur => "use the name of a binding to recur instead".into(),
+            Sys(SysOp::GifDecode) => format!(
                 "use {} {} instead",
                 Un.format(),
                 Sys(SysOp::GifEncode).format()
-            )),
-            Sys(SysOp::AudioDecode) => Some(format!(
+            ),
+            Sys(SysOp::AudioDecode) => format!(
                 "use {} {} instead",
                 Un.format(),
                 Sys(SysOp::AudioEncode).format()
-            )),
-            Sys(SysOp::ImDecode) => Some(format!(
+            ),
+            Sys(SysOp::ImDecode) => format!(
                 "use {} {} instead",
                 Un.format(),
                 Sys(SysOp::ImEncode).format()
-            )),
-            Deal => Some(format!(
-                "use {Select}{Rise}[{Pop}{Repeat}{Gen}]{Len}{Over} instead"
-            )),
-            _ => None,
-        }
+            ),
+            Deal => format!("use {Select}{Rise}[{Pop}{Repeat}{Gen}]{Len}{Over} instead"),
+            Bind => format!(
+                "use planet notation, {}, and/or {} shenanigans instead",
+                Map.format(),
+                Fill.format()
+            ),
+            Types => format!("use {} and pattern matching instead", Type.format()),
+            Shapes => format!("use {} and pattern matching instead", Shape.format()),
+            _ => return None,
+        })
     }
     /// Check if this primitive is experimental
     #[allow(unused_parens)]
@@ -368,8 +372,7 @@ impl Primitive {
             self,
             Coordinate
                 | (This | Recur)
-                | (Rectify | All | Cascade | By)
-                | (Map | Insert | Has | Get | Remove)
+                | (All | Cascade | By)
                 | Bind
                 | (Shapes | Types)
                 | Sys(SysOp::FFI)
@@ -589,7 +592,7 @@ impl Primitive {
             Primitive::Fold => reduce::fold(env)?,
             Primitive::Each => zip::each(env)?,
             Primitive::Rows => zip::rows(env)?,
-            Primitive::Table | Primitive::Cross => table::table(env)?,
+            Primitive::Table => table::table(env)?,
             Primitive::Inventory => zip::inventory(env)?,
             Primitive::Repeat => loops::repeat(env)?,
             Primitive::Do => loops::do_(env)?,
@@ -628,46 +631,25 @@ impl Primitive {
             Primitive::Pop => {
                 env.pop(1)?;
             }
-            Primitive::Dip => {
-                return Err(env.error("Dip was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::On => {
-                return Err(env.error("On was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::By => {
-                return Err(env.error("Off was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Gap => {
-                return Err(env.error("Gap was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Un => {
-                return Err(env.error("Invert was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Under => {
-                return Err(env.error("Under was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Bind => {
-                return Err(env.error("Bind was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Content => {
-                return Err(env.error("Content was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Both => {
-                return Err(env.error("Both was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Fork => {
-                return Err(env.error("Fork was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Cascade => {
-                return Err(env.error("Cascade was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Bracket => {
-                return Err(env.error("Bracket was not inlined. This is a bug in the interpreter"))
-            }
             Primitive::All => algorithm::all(env)?,
             Primitive::Fill => {
                 let fill = env.pop_function()?;
                 let f = env.pop_function()?;
+                let outputs = fill.signature().outputs;
+                if outputs > 1 {
+                    return Err(env.error(format!(
+                        "{} function can have at most 1 output, but its signature is {}",
+                        Primitive::Fill.format(),
+                        fill.signature()
+                    )));
+                }
+                if outputs == 0 {
+                    return env.without_fill_but(
+                        fill.signature().args,
+                        |env| env.call(fill),
+                        |env| env.call(f),
+                    );
+                }
                 env.call(fill)?;
                 let fill_value = env.pop("fill value")?;
                 env.with_fill(fill_value, |env| env.call(f))?;
@@ -746,9 +728,6 @@ impl Primitive {
                     .or_default()
                     .insert(args, outputs.clone());
             }
-            Primitive::Comptime => {
-                return Err(env.error("Comptime was not inlined. This is a bug in the interpreter"));
-            }
             Primitive::Spawn => {
                 let f = env.pop_function()?;
                 env.spawn(f.signature().args, false, |env| env.call(f))?;
@@ -775,10 +754,6 @@ impl Primitive {
                 env.try_recv(id)?;
             }
             Primitive::Now => env.push(instant::now() / 1000.0),
-            Primitive::Rectify => {
-                let f = env.pop_function()?;
-                env.call(f)?;
-            }
             Primitive::SetInverse => {
                 let f = env.pop_function()?;
                 let _inv = env.pop_function()?;
@@ -827,14 +802,26 @@ impl Primitive {
             Primitive::Dump => dump(env, false)?,
             Primitive::Regex => regex(env)?,
             Primitive::Csv => env.monadic_ref_env(Value::to_csv)?,
-            Primitive::Stringify => {
-                return Err(env.error("stringify was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Quote => {
-                return Err(env.error("quote was not inlined. This is a bug in the interpreter"))
-            }
-            Primitive::Sig => {
-                return Err(env.error("signature was not inlined. This is a bug in the interpreter"))
+            Primitive::Stringify
+            | Primitive::Quote
+            | Primitive::Sig
+            | Primitive::Comptime
+            | Primitive::Dip
+            | Primitive::On
+            | Primitive::By
+            | Primitive::Gap
+            | Primitive::Un
+            | Primitive::Under
+            | Primitive::Bind
+            | Primitive::Content
+            | Primitive::Both
+            | Primitive::Fork
+            | Primitive::Cascade
+            | Primitive::Bracket => {
+                return Err(env.error(format!(
+                    "{} was not inlined. This is a bug in the interpreter",
+                    self.format()
+                )))
             }
             Primitive::Sys(io) => io.run(env)?,
         }
@@ -845,6 +832,10 @@ impl Primitive {
 impl ImplPrimitive {
     pub(crate) fn run(&self, env: &mut Uiua) -> UiuaResult {
         match self {
+            ImplPrimitive::UnPop => {
+                let val = (env.last_fill()).ok_or_else(|| env.error("No fill set").fill())?;
+                env.push(val.clone());
+            }
             ImplPrimitive::Asin => env.monadic_env(Value::asin)?,
             ImplPrimitive::UndoKeep => {
                 let from = env.pop(1)?;
@@ -1670,11 +1661,7 @@ mod tests {
             for prim in Primitive::non_deprecated() {
                 if matches!(
                     prim,
-                    Primitive::Rand
-                        | Primitive::Trace
-                        | Primitive::Rectify
-                        | Primitive::Recur
-                        | Primitive::Parse
+                    Primitive::Rand | Primitive::Trace | Primitive::Recur | Primitive::Parse
                 ) {
                     continue;
                 }

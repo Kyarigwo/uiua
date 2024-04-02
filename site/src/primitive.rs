@@ -109,6 +109,7 @@ pub fn PrimDocs(prim: Primitive) -> impl IntoView {
             { match prim {
                 Primitive::Un => all_uns().into_view(),
                 Primitive::Under => all_unders().into_view(),
+                Primitive::Fill => all_fills().into_view(),
                 _ => View::default(),
             } }
         </div>
@@ -142,6 +143,63 @@ pub fn AllFunctions() -> impl IntoView {
         <p>"This is a list of every built-in function in Uiua, provided for your scrolling pleasure."</p>
         <p>"For a searchable list, see the "<A href="/docs#functions">"main docs page"</A>"."</p>
         { move || list.get() }
+    }
+}
+
+fn all_fills() -> impl IntoView {
+    use Primitive::*;
+    view! {
+        <Hd id="fills"><Prim prim=Fill/>"-compatible functions"</Hd>
+        <table class="header-centered-table cell-centered-table" style="width: 100%">
+            <tr>
+                <th>"Function"</th>
+                <th>"Notes"</th>
+                <th>"Example"</th>
+            </tr>
+            { fill_row_impl("Pervasive Dyadics", "", "⬚10+ [1 2] [3 4 5 6]") }
+            { fill_row_impl("Arrays", "", "⬚0[1 2_3_4 5_6]") }
+            { fill_row(First, "Default scalar for empty array", "⬚5⊢ []") }
+            { fill_row(Parse, "Default for non-number strings", "⬚10⋕ {\"1\" \"2\" \"dog\"}") }
+            { fill_row(Couple, "Matches shapes", "⬚0⊟ [1 2 3 4] [5 6]") }
+            { fill_row(Join, "Makes shapes work", "⬚0⊂ [1_2 3_4] [5 6 7]") }
+            { fill_row(Keep, "Fills mask", "⬚0▽ [1 0 1] \"abcdef\"") }
+            { fill_row(Pick, "Out-of-bounds default", "⬚10⊡ 5 [1 2 3]") }
+            { fill_row(Select, "Out-of-bounds default", "⬚10⊏ 5 [1 2 3]") }
+            { fill_row(Take, "Out-of-bounds default", "⬚0↙5 [1 2 3]") }
+            { fill_row(Reshape, "Fills excess elements", "⬚0↯ 2_4 [1 2 3]") }
+            { fill_row(Rotate, "Fills instead of wrapping", "⬚0↻ 2 [1 2 3 4 5]") }
+            { fill_row(Reduce, "Sets initial value", "⬚10/+ [1 2 3]") }
+            { fill_row(Scan, "Fills row shapes", "⬚10\\⊂ [1 2 3]") }
+            { fill_row(Rows, "Fills row shapes", "⬚0≡⇡ [4 7 3]") }
+            { fill_row(Each, "Fills row shapes", "⬚0∵⇡ [3_2 2_4]") }
+            { fill_row(Partition, "Fills row shapes", "⬚@ ⊜∘ ≠@ . \"Hey there\"") }
+            { fill_row(Partition, "Sets initial value", "⬚\"- \"⊜⊂ ≠@ . \"Hello world!\"") }
+            { fill_row(Group, "Fills row shapes", "⬚0⊕∘ ◿3. [1 8 4 9 3 8 2]") }
+            { fill_row(Group, "Sets initial value", "⬚[]⊕⊂ ◿3. [1 8 4 9 3 8 2]") }
+            { fill_row_impl(view!(<Prims prims=[Un, Pop]/>), "Get fill value", "⬚5°◌") }
+        </table>
+    }
+}
+
+fn fill_row(
+    prim: Primitive,
+    notes: impl IntoView,
+    example: impl Into<Option<&'static str>>,
+) -> impl IntoView {
+    fill_row_impl(view!(<Prim prim=prim/>), notes, example)
+}
+
+fn fill_row_impl(
+    prim: impl IntoView,
+    notes: impl IntoView,
+    example: impl Into<Option<&'static str>>,
+) -> impl IntoView {
+    view! {
+        <tr>
+            <td>{prim}</td>
+            <td>{notes}</td>
+            <td>{ example.into().map(|ex| view!(<Editor example=ex/>)) }</td>
+        </tr>
     }
 }
 
@@ -215,9 +273,10 @@ fn all_uns() -> impl IntoView {
             { inverse_row([Trace], No, "", "°⸮ 5") }
             { inverse_row([Stack], No, "", "°? 5") }
             { inverse_row([Dump], No, "", "°dump△ [2 3 4]") }
-            { inverse_row([Sys(AudioEncode)], No, "", None) }
-            { inverse_row([Sys(ImEncode)], No, "", None) }
-            { inverse_row([Sys(GifEncode)], No, "", None) }
+            { inverse_row([Pop], RequiresFill, "", "⬚5°◌") }
+            { inverse_row([Sys(AudioEncode)], No, "Decodes bytes", None) }
+            { inverse_row([Sys(ImEncode)], No, "Decodes bytes", None) }
+            { inverse_row([Sys(GifEncode)], No, "Decodes bytes", None) }
             { inverse_row([Sys(ClipboardGet)], No, "", None) }
             { inverse_row([Sys(ClipboardSet)], No, "", None) }
         </table>
@@ -299,6 +358,7 @@ enum ValueRequirement {
     No,
     Optional,
     Required,
+    RequiresFill,
 }
 
 fn inverse_row<const N: usize>(
@@ -325,9 +385,10 @@ fn inverse_row_impl(
         <tr>
             <td>{prims}</td>
             <td>{ match value_req {
-                ValueRequirement::No => "No",
-                ValueRequirement::Optional => "Optional",
-                ValueRequirement::Required => "Required",
+                ValueRequirement::No => "No".into_view(),
+                ValueRequirement::Optional => "Optional".into_view(),
+                ValueRequirement::Required => "Required".into_view(),
+                ValueRequirement::RequiresFill => view!(<Prim prim=Primitive::Fill/>).into_view(),
             } }</td>
             <td>{notes}</td>
             <td>{ example.into().map(|ex| view!(<Editor example=ex/>)) }</td>

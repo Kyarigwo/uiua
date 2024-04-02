@@ -10,17 +10,16 @@ use crate::{
 };
 
 /// A compiled Uiua assembly
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Assembly {
     pub(crate) instrs: EcoVec<Instr>,
     /// The sections of the instructions that are top-level expressions
     pub(crate) top_slices: Vec<FuncSlice>,
     /// A list of global bindings
     pub bindings: EcoVec<BindingInfo>,
-    #[serde(skip)]
-    pub(crate) dynamic_functions: EcoVec<DynFn>,
     pub(crate) spans: EcoVec<Span>,
     pub(crate) inputs: Inputs,
+    pub(crate) dynamic_functions: EcoVec<DynFn>,
 }
 
 type DynFn = Arc<dyn Fn(&mut Uiua) -> UiuaResult + Send + Sync + 'static>;
@@ -61,7 +60,7 @@ impl Assembly {
         comment: Option<Arc<str>>,
     ) {
         let span = self.spans[span].clone();
-        self.add_global_at(local, Global::Func(function), span.code(), comment);
+        self.add_global_at(local, BindingKind::Func(function), span.code(), comment);
     }
     pub(crate) fn bind_const(
         &mut self,
@@ -71,18 +70,18 @@ impl Assembly {
         comment: Option<Arc<str>>,
     ) {
         let span = self.spans[span].clone();
-        self.add_global_at(local, Global::Const(value), span.code(), comment);
+        self.add_global_at(local, BindingKind::Const(value), span.code(), comment);
     }
     pub(crate) fn add_global_at(
         &mut self,
         local: LocalName,
-        global: Global,
+        global: BindingKind,
         span: Option<CodeSpan>,
         comment: Option<Arc<str>>,
     ) {
         let binding = BindingInfo {
             public: local.public,
-            global,
+            kind: global,
             span: span.unwrap_or_else(CodeSpan::dummy),
             comment,
         };
@@ -91,7 +90,7 @@ impl Assembly {
         } else {
             while self.bindings.len() < local.index {
                 self.bindings.push(BindingInfo {
-                    global: Global::Const(None),
+                    kind: BindingKind::Const(None),
                     public: false,
                     span: CodeSpan::dummy(),
                     comment: None,
@@ -103,6 +102,176 @@ impl Assembly {
     /// Make top-level expressions not run
     pub fn remove_top_level(&mut self) {
         self.top_slices.clear();
+    }
+    /// Parse a `.uasm` file into an assembly
+    pub fn from_uasm(src: &str) -> Result<Self, String> {
+        let rest = src;
+        let (instrs_src, rest) = rest
+            .trim()
+            .split_once("TOP SLICES")
+            .ok_or("No top slices")?;
+        let (top_slices_src, rest) = rest.split_once("BINDINGS").ok_or("No bindings")?;
+        let (bindings_src, rest) = rest.trim().split_once("SPANS").ok_or("No spans")?;
+        let (spans_src, rest) = rest.trim().split_once("FILES").ok_or("No files")?;
+        let (files_src, rest) = rest.trim().split_once("STRING INPUTS").unwrap_or(("", ""));
+        let strings_src = rest.trim();
+
+        let mut instrs = EcoVec::new();
+        for line in instrs_src.lines().filter(|line| !line.trim().is_empty()) {
+            let instr: Instr = serde_json::from_str(line)
+                .or_else(|e| {
+                    let (key, val) = line.split_once(' ').ok_or("No key")?;
+                    let json = format!("{{{key:?}: {val:?}}}");
+                    serde_json::from_str(&json).map_err(|_| e.to_string())
+                })
+                .or_else(|e| {
+                    let (key, val) = line.split_once(' ').ok_or("No key")?;
+                    let json = format!("[{key:?},{val:?}]");
+                    serde_json::from_str(&json).map_err(|_| e.to_string())
+                })?;
+            instrs.push(instr);
+        }
+
+        let mut top_slices = Vec::new();
+        for line in top_slices_src
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
+            let (start, len) = line.split_once(' ').ok_or("No start")?;
+            let start = start.parse::<usize>().map_err(|e| e.to_string())?;
+            let len = len.parse::<usize>().map_err(|e| e.to_string())?;
+            top_slices.push(FuncSlice { start, len });
+        }
+
+        let mut bindings = EcoVec::new();
+        for line in bindings_src.lines().filter(|line| !line.trim().is_empty()) {
+            let (public, line) = if let Some(line) = line.strip_prefix("private ") {
+                (false, line)
+            } else {
+                (true, line)
+            };
+            let kind: BindingKind = serde_json::from_str(line).or_else(|e| {
+                let (key, val) = line.split_once("\" ").ok_or("No key")?;
+                let key = format!("{key}\"");
+                let json = format!("{{{key:?}: {val:?}}}");
+                serde_json::from_str(&json).map_err(|_| e.to_string())
+            })?;
+            bindings.push(BindingInfo {
+                kind,
+                public,
+                span: CodeSpan::dummy(),
+                comment: None,
+            });
+        }
+
+        let mut spans = EcoVec::new();
+        spans.push(Span::Builtin);
+        for line in spans_src.lines().filter(|line| !line.trim().is_empty()) {
+            let span: Span = serde_json::from_str(line).map_err(|e| e.to_string())?;
+            spans.push(span);
+        }
+
+        let files = DashMap::new();
+        for line in files_src.lines().filter(|line| !line.trim().is_empty()) {
+            let (path, src) = line.split_once(": ").ok_or("No path")?;
+            let path = PathBuf::from(path);
+            let src: EcoString = serde_json::from_str(src).map_err(|e| e.to_string())?;
+            files.insert(path, src);
+        }
+
+        let mut strings = EcoVec::new();
+        for line in strings_src.lines() {
+            let src: EcoString = serde_json::from_str(line).map_err(|e| e.to_string())?;
+            strings.push(src);
+        }
+
+        Ok(Self {
+            instrs,
+            top_slices,
+            bindings,
+            spans,
+            inputs: Inputs {
+                files,
+                strings,
+                ..Inputs::default()
+            },
+            dynamic_functions: EcoVec::new(),
+        })
+    }
+    /// Serialize the assembly into a `.uasm` file
+    pub fn to_uasm(&self) -> String {
+        let mut uasm = String::new();
+
+        for instr in &self.instrs {
+            let json = serde_json::to_value(instr).unwrap();
+            match &json {
+                serde_json::Value::Object(map) => {
+                    if map.len() == 1 {
+                        let key = map.keys().next().unwrap();
+                        let value = map.values().next().unwrap();
+                        uasm.push_str(&format!("{} {}\n", key, value));
+                        continue;
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    if arr.len() == 2 {
+                        if let serde_json::Value::String(key) = &arr[0] {
+                            let value = &arr[1];
+                            uasm.push_str(&format!("{} {}\n", key, value));
+                            continue;
+                        }
+                    }
+                }
+                _ => (),
+            }
+            uasm.push_str(&json.to_string());
+            uasm.push('\n');
+        }
+
+        uasm.push_str("\nTOP SLICES\n");
+        for slice in &self.top_slices {
+            uasm.push_str(&format!("{} {}\n", slice.start, slice.len));
+        }
+
+        uasm.push_str("\nBINDINGS\n");
+        for binding in &self.bindings {
+            if !binding.public {
+                uasm.push_str("private ");
+            }
+            if let serde_json::Value::Object(map) = serde_json::to_value(&binding.kind).unwrap() {
+                if map.len() == 1 {
+                    let key = map.keys().next().unwrap();
+                    let value = map.values().next().unwrap();
+                    uasm.push_str(&format!("{} {}\n", key, value));
+                    continue;
+                }
+            }
+            uasm.push_str(&serde_json::to_string(&binding.kind).unwrap());
+            uasm.push('\n');
+        }
+
+        uasm.push_str("\nSPANS\n");
+        for span in self.spans.iter().skip(1) {
+            uasm.push_str(&serde_json::to_string(span).unwrap());
+            uasm.push('\n');
+        }
+
+        uasm.push_str("\nFILES\n");
+        for entry in &self.inputs.files {
+            let key = entry.key();
+            let value = entry.value();
+            uasm.push_str(&format!("{:?} {:?}\n", key.to_string_lossy(), value));
+        }
+
+        if !self.inputs.strings.is_empty() {
+            uasm.push_str("\nSTRING INPUTS\n");
+            for src in &self.inputs.strings {
+                uasm.push_str(&serde_json::to_string(src).unwrap());
+                uasm.push('\n');
+            }
+        }
+
+        uasm
     }
 }
 
@@ -119,47 +288,34 @@ impl AsMut<Assembly> for Assembly {
 }
 
 /// Information about a binding
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct BindingInfo {
-    /// The global binding type
-    pub global: Global,
+    /// The binding kind
+    pub kind: BindingKind,
     /// Whether the binding is public
-    #[serde(default = "tru", skip_serializing_if = "is_true")]
     pub public: bool,
-    #[serde(skip, default = "CodeSpan::dummy")]
-    #[allow(dead_code)]
     /// The span of the original binding name
     pub span: CodeSpan,
-    #[serde(skip)]
-    #[allow(dead_code)]
     /// The comment preceding the binding
     pub comment: Option<Arc<str>>,
 }
 
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
-fn tru() -> bool {
-    true
-}
-
-/// A type of global binding
+/// A kind of global binding
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Global {
+#[serde(rename_all = "snake_case")]
+pub enum BindingKind {
     /// A constant value
     Const(Option<Value>),
     /// A function
     Func(Function),
     /// A module
-    #[allow(missing_docs)]
     Module(PathBuf),
     /// A macro
     Macro,
 }
 
-impl Global {
-    /// Get the signature of the global
+impl BindingKind {
+    /// Get the signature of the binding
     pub fn signature(&self) -> Option<Signature> {
         match self {
             Self::Const(_) => Some(Signature::new(0, 1)),
@@ -281,11 +437,12 @@ impl<'de> Deserialize<'de> for Instr {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum InstrRep {
     Comment(Ident),
     CallGlobal(usize, bool),
     BindGlobal(usize, usize),
-    BeginArray(()),
+    BeginArray,
     EndArray(bool, usize),
     Call(usize),
     PushFunc(Function),
@@ -295,19 +452,17 @@ enum InstrRep {
     Label(EcoString, usize),
     Dynamic(DynamicFunction),
     PushLocals(usize, usize),
-    PopLocals(()),
+    PopLocals,
     GetLocal(usize, usize),
     Unpack(usize, usize, bool),
     TouchStack(usize, usize),
     PushTemp(TempStack, usize, usize),
     PopTemp(TempStack, usize, usize),
     CopyToTemp(TempStack, usize, usize),
-    CopyFromTemp(TempStack, usize, usize, usize),
-    DropTemp(TempStack, usize, usize),
     PushSig(Signature),
-    PopSig(()),
+    PopSig,
     SetOutputComment(usize, usize),
-    NoInline(()),
+    NoInline,
     #[serde(untagged)]
     Push(Value),
     #[serde(untagged)]
@@ -323,7 +478,7 @@ impl From<Instr> for InstrRep {
             Instr::Push(value) => Self::Push(value),
             Instr::CallGlobal { index, call } => Self::CallGlobal(index, call),
             Instr::BindGlobal { span, index } => Self::BindGlobal(span, index),
-            Instr::BeginArray => Self::BeginArray(()),
+            Instr::BeginArray => Self::BeginArray,
             Instr::EndArray { boxed, span } => Self::EndArray(boxed, span),
             Instr::Prim(prim, span) => Self::Prim(prim, span),
             Instr::ImplPrim(prim, span) => Self::ImplPrim(prim, span),
@@ -340,24 +495,17 @@ impl From<Instr> for InstrRep {
             Instr::Label { label, span } => Self::Label(label, span),
             Instr::Dynamic(func) => Self::Dynamic(func),
             Instr::PushLocals { count, span } => Self::PushLocals(count, span),
-            Instr::PopLocals => Self::PopLocals(()),
+            Instr::PopLocals => Self::PopLocals,
             Instr::GetLocal { index, span } => Self::GetLocal(index, span),
             Instr::Unpack { count, span, unbox } => Self::Unpack(count, span, unbox),
             Instr::TouchStack { count, span } => Self::TouchStack(count, span),
             Instr::PushTemp { stack, count, span } => Self::PushTemp(stack, count, span),
             Instr::PopTemp { stack, count, span } => Self::PopTemp(stack, count, span),
             Instr::CopyToTemp { stack, count, span } => Self::CopyToTemp(stack, count, span),
-            Instr::CopyFromTemp {
-                stack,
-                offset,
-                count,
-                span,
-            } => Self::CopyFromTemp(stack, offset, count, span),
-            Instr::DropTemp { stack, count, span } => Self::DropTemp(stack, count, span),
             Instr::PushSig(sig) => Self::PushSig(sig),
-            Instr::PopSig => Self::PopSig(()),
+            Instr::PopSig => Self::PopSig,
             Instr::SetOutputComment { i, n } => Self::SetOutputComment(i, n),
-            Instr::NoInline => Self::NoInline(()),
+            Instr::NoInline => Self::NoInline,
         }
     }
 }
@@ -369,7 +517,7 @@ impl From<InstrRep> for Instr {
             InstrRep::Push(value) => Self::Push(value),
             InstrRep::CallGlobal(index, call) => Self::CallGlobal { index, call },
             InstrRep::BindGlobal(span, index) => Self::BindGlobal { span, index },
-            InstrRep::BeginArray(()) => Self::BeginArray,
+            InstrRep::BeginArray => Self::BeginArray,
             InstrRep::EndArray(boxed, span) => Self::EndArray { boxed, span },
             InstrRep::Prim(prim, span) => Self::Prim(prim, span),
             InstrRep::ImplPrim(prim, span) => Self::ImplPrim(prim, span),
@@ -386,24 +534,17 @@ impl From<InstrRep> for Instr {
             InstrRep::Label(label, span) => Self::Label { label, span },
             InstrRep::Dynamic(func) => Self::Dynamic(func),
             InstrRep::PushLocals(count, span) => Self::PushLocals { count, span },
-            InstrRep::PopLocals(()) => Self::PopLocals,
+            InstrRep::PopLocals => Self::PopLocals,
             InstrRep::GetLocal(index, span) => Self::GetLocal { index, span },
             InstrRep::Unpack(count, span, unbox) => Self::Unpack { count, span, unbox },
             InstrRep::TouchStack(count, span) => Self::TouchStack { count, span },
             InstrRep::PushTemp(stack, count, span) => Self::PushTemp { stack, count, span },
             InstrRep::PopTemp(stack, count, span) => Self::PopTemp { stack, count, span },
             InstrRep::CopyToTemp(stack, count, span) => Self::CopyToTemp { stack, count, span },
-            InstrRep::CopyFromTemp(stack, offset, count, span) => Self::CopyFromTemp {
-                stack,
-                offset,
-                count,
-                span,
-            },
-            InstrRep::DropTemp(stack, count, span) => Self::DropTemp { stack, count, span },
             InstrRep::PushSig(sig) => Self::PushSig(sig),
-            InstrRep::PopSig(()) => Self::PopSig,
+            InstrRep::PopSig => Self::PopSig,
             InstrRep::SetOutputComment(i, n) => Self::SetOutputComment { i, n },
-            InstrRep::NoInline(()) => Self::NoInline,
+            InstrRep::NoInline => Self::NoInline,
         }
     }
 }

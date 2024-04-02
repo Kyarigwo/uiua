@@ -2,9 +2,8 @@
 
 use std::{cmp::Ordering, mem::take};
 
-use crate::algorithm::op2_bytes_retry_fill;
 use crate::{
-    algorithm::{max_shape, FillContext},
+    algorithm::{max_shape, op2_bytes_retry_fill, FillContext},
     cowslice::cowslice,
     Array, ArrayValue, FormatShape, Primitive, Uiua, UiuaResult, Value,
 };

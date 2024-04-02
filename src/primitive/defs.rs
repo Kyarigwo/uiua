@@ -172,7 +172,8 @@ macro_rules! primitive {
     ),* $(,)?) => {
         /// A built-in function
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Sequence, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
+        #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+        #[allow(rustdoc::broken_intra_doc_links)]
         pub enum Primitive {
             $(
                 #[doc = $doc_rust]
@@ -292,6 +293,9 @@ primitive!(
     /// For example, [gen] returns both a random number and a seed for the next call.
     /// When you have all the random numbers you need, you often want to discard the seed.
     /// ex: ⌊×10[◌⍥gen10 0]
+    ///
+    /// [un][pop] can be used to retrieve the [fill] value.
+    /// ex: ⬚3(+°◌°◌)
     (1(0), Pop, Stack, ("pop", '◌')),
     /// Do nothing with one value
     ///
@@ -1367,19 +1371,6 @@ primitive!(
     /// ex: {⍜ {⊙⊙∘}⍚⊂    1_2 3_4_5 6_7_8_9 10}
     ///   : {⍜⊙{⊙⊙∘}⍚⊂ 10 1_2 3_4_5 6_7_8_9   }
     ([1], Inventory, IteratingModifier, ("inventory", '⍚')),
-    /// Apply a function to each combination of rows of arrays
-    ///
-    /// This *was* the row-wise version of [table].
-    ///
-    /// ex: [1_2 3_4 5_6]
-    ///   : [7_8 9_10]
-    ///   : ⊠⊂ ,,
-    /// [cross] works with more than two arrays.
-    /// ex: ⊠(⊂⊂) 1_2 3_4 5_6
-    /// If you want to fix one of the arrays so that it is present in every call of the function, you can simply add a dimension to it, though you may need to collapse it later.
-    /// Here, we add a dimension to the second array to fix it, then collapse with `reduce``join`.
-    /// ex: /⊂ ⊠(⊂⊂) ⊙¤ 1_2 3_4 5_6
-    (2[1], Cross, IteratingModifier, ("cross", '⊠')),
     /// Repeat a function a number of times
     ///
     /// ex: ⍥(+2)5 0
@@ -1606,6 +1597,8 @@ primitive!(
     ([1], Bind, OtherModifier, ("bind", 'λ')),
     /// Invert the behavior of a function
     ///
+    /// A list of all [un]-compatible functions can be found [below](#uns).
+    ///
     /// ex: °√ 5
     /// Two functions that are invertible alone can be inverted together
     /// ex: °(+1√) 5
@@ -1614,21 +1607,6 @@ primitive!(
     /// A function's [un]-inverse can be set with [setinv].
     /// For more about inverses, see the [Inverse Tutorial](/tutorial/inverses).
     ([1], Un, InversionModifier, ("un", '°')),
-    /// Set a function as its own inverse
-    ///
-    /// ex: # Experimental!
-    ///   : F ← ⌅⧻
-    ///   : F   1_2_4
-    ///   : °F  1_2_4
-    ///   : ⍜F∘ 1_2_4 # Calls ⧻ twice
-    /// This is useful when combined with [under]. It allows you to call a function twice with another function in between.
-    /// Finding the standard deviation of a list of numbers requires finding the mean twice. Here, we only need to write the mean code once.
-    /// ex: # Experimental!
-    ///   : StdDev ← √⍜⌅(÷⊃⧻/+)(×.-).
-    ///   : StdDev [1 2 5 8 9]
-    ///
-    /// For more complex inverse defining, see [setinv] and [setund].
-    ([1], Rectify, InversionModifier, ("rectify", '⌅')),
     /// Set the [un]-compatible inverse of a function
     ///
     /// The first function is the uninverted function, and the second function is the inverse.
@@ -1676,6 +1654,8 @@ primitive!(
     ///
     /// This is a more powerful version of [un].
     /// Conceptually, [under] transforms a value, modifies it, then reverses the transformation.
+    ///
+    /// A list of all [under]-compatible functions can be found [below](#unders).
     ///
     /// [under] takes 2 functions `f` and `g` and some other arguments `xs`.
     /// It applies `f` to `xs`, then applies `g` to the result.
@@ -1786,52 +1766,40 @@ primitive!(
     /// [fill] allows you to specify a value that will be used to extend the shape of one or both of the operands to make an operation succeed.
     /// The function is modified to take a fill value which will be used to fill in shapes.
     ///
-    /// [fill] allows you to set default values for [take].
-    /// ex: ⬚0↙ 7 [8 3 9 2 1]
-    /// ex: ⬚π↙ ¯6 [1 2 3]
-    /// ex: ⬚42↙ 4 [1_2_3 4_5_6]
+    /// A list of all [fill]-compatible functions can be found [below](#fills).
     ///
-    /// Using [fill] with [couple] will fill both arrays until their shapes match.
-    /// ex: ⬚0⊟ 1 2_3
-    /// ex: ⬚0⊟ 1_2 3_4_5_6
-    /// ex: ⬚0⊟ 1_2_3 [4_5 6_7]
+    /// ex: ⬚0[1 2_3_4 5_6]
+    /// ex: ⬚10+ [1 2 3 4] [5 6]
+    /// ex: ⬚0≡⇡ [3 6 2]
+    /// A fill value can be pulled from the stack with [identity].
+    /// ex: ⬚∘[1 2_3_4] 0
+    /// ex: ⬚∘+ ∞ [1 2] [3 4 5 6]
     ///
-    /// Using [fill] with [join] will fill both arrays until the [join] makes sense.
-    /// ex: ⬚0⊂ 1 [2_3_4 5_6_7]
-    /// ex: ⬚0⊂ [1_2 3_4] 5_6_7
+    /// Beware that [fill] nullifies [fix] for use in repeating a value multiple times in loops.
+    /// ex:   ≡⊂¤ [1 2 3] [4 5]
+    ///   : ⬚0≡⊂¤ [1 2 3] [4 5]
+    /// This is because [fix] works by making an array with 1 row, but [fill] tries to make the [length]s match.
+    /// To get the expected behavior, use [box] and [content] instead of [fix].
+    /// ex: ⬚0≡◇⊂□ [1 2 3] [4 5]
     ///
-    /// Because array construction is implemented in terms of [couple] and [join], [fill] can be used when building arrays.
-    /// ex: ⬚0[1 2_3 4_5_6]
+    /// Fill values are temporarily removed for the body of looping modifiers that can use them to fix their row shapes.
+    /// These include [reduce], [scan], [rows], [each], [partition], and [group].
+    /// ex! ⬚0≡(⊟1_2) [3 4]
+    /// [un][pop] can be used to retrieve the fill value. This ignores loop nesting and so can be used to "pull" the fill into the loop.
+    /// ex: ⬚0≡(⬚°◌⊟1_2) [3 4]
     ///
-    /// This also means that modifiers like [rows] and [each] work with [fill].
-    /// ex: ⬚∞≡⇡ [4 5 8]
+    /// [fill][pop] can be used to temporarily remove the fill value.
+    /// ex: ⬚0  ↻ 2 [1 2 3 4 5]
+    ///   : ⬚0⬚◌↻ 2 [1 2 3 4 5]
+    /// This *does* affect [un][pop].
+    /// ex: ⬚0  °◌
+    /// ex! ⬚0⬚◌°◌
     ///
-    /// [fill] also works with pervasive operations where the shapes don't match.
-    /// ex: ⬚0+ 1_2_3 10_9_8_7_6_5
-    ///
-    /// Many functions, like [scan] and [partition], implicitly build arrays and require compatible shapes.
-    /// [fill] can be used with them as well. In some cases, this prevents the need to use [box].
-    /// ex: ⬚0\⊂ 1_2_3_4_5
-    /// ex: ⬚@ ⊜∘≠@ . "No □ needed!"
-    ///
-    /// [fill] will prevent [pick] and [select] from throwing an error if an index is out of bounds.
-    /// ex: ⬚∞⊏ 3_7_0 [8 3 9 2 0]
-    ///
-    /// [fill] allows the list of counts for [keep] to be shorter than the kept array.
-    /// This is especially useful when used with functions like [windows] or [find] which make an array shorter than their input.
-    /// ex: ⬚0▽ ≡/>◫2. [1 8 0 2 7 2 3]
-    ///
-    /// [fill][reshape] fills in the shape with the fill element instead of cycling the data.
-    /// ex:   ↯ 3_5 ⇡9
-    ///   : ⬚0↯ 3_5 ⇡9
-    ///
-    /// [fill][rotate] fills in array elements instead of wrapping them.
-    /// ex: ⬚0↻ 2 [1 2 3 4 5]
-    ///   :   ↻ 2 [1 2 3 4 5]
-    ///
-    /// To [fill] with a value that is on the stack, use [identity].
-    /// ex: F = ⬚∘+
-    ///   : F 100 [1 2 3 4] [5 6]
+    /// [fill] and [un][pop] can be used to make a sort of ad-hoc variable system.
+    /// ex: a ← (°□⊡0°◌)
+    ///   : b ← (°□⊡1°◌)
+    ///   : c ← (°□⊡2°◌)
+    ///   : ⬚{⊙⊙∘}(×b+c×a a) 2 3 4
     ([2], Fill, OtherModifier, ("fill", '⬚')),
     /// Call a function and catch errors
     ///
@@ -2104,32 +2072,26 @@ primitive!(
     /// The related map functions [insert], [has], and [get], all treat the array as an actual hashmap, so they have O(1) amortized time complexity.
     /// Because the values array maintains insertion order, the [remove] function has O(n) time complexity.
     ///
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : map {"Alice" "Bob" "Carol"} [3_8 12_2 4_5]
     /// Use [get] to get the value corresponding to a key.
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : get 2 .
     /// Use [insert] to insert additional key-value pairs.
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : insert 5 6
     /// An empty array can be used as an empty map, event if it was not created with [map].
-    /// ex: # Experimental!
-    ///   : has 5 []
+    /// ex: has 5 []
     ///   : insert 1 2 []
     /// You can use [un][map] to get the keys and values back.
-    /// ex: # Experimental!
-    ///   : []
+    /// ex: []
     ///   : insert 1 2_3
     ///   : insert 4 5_6
     ///   : insert 7 8_9
     ///   : °map .
     ///
     /// Pervasive operations work on the values of a map, but not on the keys.
-    /// ex: # Experimental!
-    ///   : ×10 map 1_2_3 4_5_6
+    /// ex: ×10 map 1_2_3 4_5_6
     /// Some normal array operations work on maps:
     /// - [reverse]
     /// - [rotate]
@@ -2143,60 +2105,49 @@ primitive!(
     /// Operations that do not specifically work on maps will remove the keys and turn the map into a normal array.
     ///
     /// [fix]ing a map will [fix] the keys and values. This exposes the true structure of the keys array.
-    /// ex: # Experimental!
-    ///   : ¤ map 1_2_3 4_5_6
+    /// ex: ¤ map 1_2_3 4_5_6
     /// This is usually only useful with [rows].
-    /// ex: # Experimental!
-    ///   : ≡get [1 3 3 2] ¤ map 1_2_3 4_5_6
+    /// ex: ≡get [1 3 3 2] ¤ map 1_2_3 4_5_6
     ///
     /// Map keys are stored as metadata on the values array. For this reason, they cannot be put in arrays together without being [box]ed, as the metadata for each map would be lost.
     ///
     /// Regardless of the size of the map, operations on it have O(1) amortized time complexity.
     /// In this example, we time [get] and [insert] operations on maps from 10 entries up to 100,000 entries.
-    /// ex: # Experimental!
-    ///   : Times ← (
+    /// ex: Times ← (
     ///   :   map.⇡
     ///   :   [⊙◌⍜now(get 5):
     ///   :    ⊙◌⍜now(insert 1 2).]
     ///   : )
     ///   : ⁿ:10+1⇡5
     ///   : ≡Times.
-    ///
     (2, Map, Map, "map"),
     /// Insert a key-value pair into a map array
     ///
     /// See [map] for an overview of map arrays.
     ///
     /// The array is used as an actual hashmap, so some entries may be empty.
-    /// ex: # Experimental!
-    ///   : []
+    /// ex: []
     ///   : insert 1 2
     ///   : insert 3 4
     ///   : insert 5 6
     /// If the key is already present, it is replaced.
-    /// ex: # Experimental!
-    ///   : []
+    /// ex: []
     ///   : insert 1 2
     ///   : insert 3 4
     ///   : insert 3 5
     /// Keys that are already present keep their order.
-    /// ex: # Experimental!
-    ///   : map 1_2_3 4_5_6
+    /// ex: map 1_2_3 4_5_6
     ///   : insert 1 10
     /// Here is a pattern for [remove]ing a key if it is present before [insert]ing it, so that the key moves to the end.
-    /// ex: # Experimental!
-    /// map 1_2_3 4_5_6
-    /// insert⟜⍜⊙◌remove 1 10
+    /// ex: map 1_2_3 4_5_6
+    ///   : insert⟜⍜⊙◌remove 1 10
     /// All keys (and all values) must have the same shape and type.
-    /// ex! # Experimental!
-    ///   : map 1 ["wow"]
+    /// ex! map 1 ["wow"]
     ///   : insert "hi" "there"
     /// [box] keys or values if you need to. Values will coerce to boxes if necessary.
-    /// ex: # Experimental!
-    ///   : map 1 ["wow"]
+    /// ex: map 1 ["wow"]
     ///   : insert □"hi" □"there"
-    /// ex: # Experimental!
-    ///   : map □1 □"wow"
+    /// ex: map □1 □"wow"
     ///   : insert "hi" "there"
     ///
     /// See also: [has], [get], [remove]
@@ -2205,8 +2156,7 @@ primitive!(
     ///
     /// See [map] for an overview of map arrays.
     ///
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : [fork(has 2|has 5)].
     ///
     /// See also: [insert], [get], [remove]
@@ -2215,28 +2165,22 @@ primitive!(
     ///
     /// See [map] for an overview of map arrays.
     ///
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : get 2 .
     /// If the key is not found, an error is thrown.
-    /// ex! # Experimental!
-    ///   : map 1_2 3_4
+    /// ex! map 1_2 3_4
     ///   : get 5 .
     /// You can use [try] or [has] to avoid the error.
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : ⍣get0 5 .
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : (⋅⋅0|get) has,, 5 .
     /// You can provide a default value with [fill].
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : ⬚0get 1 .
     ///   : ⬚0get 5 :
     /// You can use [under][get] to modify the value at the key.
-    /// ex: # Experimental!
-    ///   : /map⍉ [1_2 3_4 5_6]
+    /// ex: /map⍉ [1_2 3_4 5_6]
     ///   : ⍜(get3|×10)
     ///
     /// See also: [insert], [has], [remove]
@@ -2247,8 +2191,7 @@ primitive!(
     ///
     /// The key is removed if it is present.
     /// If the key is not present, the array is unchanged.
-    /// ex: # Experimental!
-    ///   : map 1_2 3_4
+    /// ex: map 1_2 3_4
     ///   : remove 2 .
     ///   : remove 5 .
     ///
@@ -2401,8 +2344,7 @@ primitive!(
     /// If you know there are headers, you can use [un][join] to separate them.
     /// ex: ⊙⋕°⊂ °csv "#,Count\n1,5\n2,21\n3,8\n"
     /// You can easily create a [map] with the headers as keys.
-    /// ex: # Experimental!
-    ///   : map⊙(⍉⋕)°⊂ °csv "#,Count\n1,5\n2,21\n3,8\n"
+    /// ex: map⊙(⍉⋕)°⊂ °csv "#,Count\n1,5\n2,21\n3,8\n"
     (1, Csv, Misc, "csv"),
     /// Convert a value to its code representation
     ///
@@ -2436,7 +2378,7 @@ macro_rules! impl_primitive {
         /// Primitives that exist as an implementation detail
         #[doc(hidden)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
+        #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
         pub enum ImplPrimitive {
             $($variant,)*
             TransposeN(i32),
@@ -2476,6 +2418,7 @@ macro_rules! impl_primitive {
 
 impl_primitive!(
     // Inverses
+    (0, UnPop),
     (1, Asin),
     (1, UnBits),
     (1, UnWhere),

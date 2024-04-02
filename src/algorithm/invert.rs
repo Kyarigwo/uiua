@@ -42,7 +42,7 @@ pub(crate) fn match_format_pattern(parts: EcoVec<EcoString>, env: &mut Uiua) -> 
                 let mut cache = cache.borrow_mut();
                 let re = cache.entry(parts.clone()).or_insert_with(|| {
                     let mut re = String::new();
-                    re.push('^');
+                    re.push_str("(?s)^");
                     for (i, part) in parts.iter().enumerate() {
                         if i > 0 {
                             re.push_str("(.+?|.*)");
@@ -73,6 +73,7 @@ fn prim_inverse(prim: Primitive, span: usize) -> Option<Instr> {
     Some(match prim {
         Identity => Instr::Prim(Identity, span),
         Flip => Instr::Prim(Flip, span),
+        Pop => Instr::ImplPrim(UnPop, span),
         Neg => Instr::Prim(Neg, span),
         Not => Instr::Prim(Not, span),
         Sin => Instr::ImplPrim(Asin, span),
@@ -107,6 +108,7 @@ fn impl_prim_inverse(prim: ImplPrimitive, span: usize) -> Option<Instr> {
     use ImplPrimitive::*;
     use Primitive::*;
     Some(match prim {
+        UnPop => Instr::Prim(Pop, span),
         Asin => Instr::Prim(Sin, span),
         TransposeN(n) => Instr::ImplPrim(TransposeN(-n), span),
         UnBits => Instr::Prim(Bits, span),
@@ -155,8 +157,6 @@ static INVERT_PATTERNS: &[&dyn InvertPattern] = {
     &[
         &invert_call_pattern,
         &invert_dump_pattern,
-        &invert_invert_pattern,
-        &invert_rectify_pattern,
         &invert_setinverse_pattern,
         &invert_setunder_setinverse_pattern,
         &invert_trivial_pattern,
@@ -168,6 +168,8 @@ static INVERT_PATTERNS: &[&dyn InvertPattern] = {
         &invert_primes_pattern,
         &invert_format_pattern,
         &invert_join_val_pattern,
+        &invert_unjoin_pattern,
+        &invert_split_pattern,
         &(Val, invert_repeat_pattern),
         &(Val, ([Rotate], [Neg, Rotate])),
         &pat!(Sqrt, (Dup, Mul)),
@@ -184,7 +186,10 @@ static INVERT_PATTERNS: &[&dyn InvertPattern] = {
         &pat!((Dup, Add), (2, Div)),
         &([Dup, Mul], [Sqrt]),
         &pat!(Join, ([], UnJoin)),
-        &(Val, pat!(UnJoin, Join)),
+        &pat!(
+            Select,
+            (CopyToInline(1), Deduplicate, PopInline(1), Classify)
+        ),
         &invert_temp_pattern,
         &invert_push_pattern,
     ]
@@ -247,45 +252,45 @@ pub(crate) fn under_instrs(
     /// Copy 1 value to the temp stack before the "before", and pop it before the "after"
     macro_rules! stash1 {
         (($($before:expr),*)) => {
-            pat!(($($before),*), (CopyToTempN(1), $($before),*), (PopTempN(1), $($before),*))
+            pat!(($($before),*), (CopyToUnder(1), $($before),*), (PopUnder(1), $($before),*))
         };
         (($($before:expr),*), ($($after:expr),*)) => {
-            pat!(($($before),*), (CopyToTempN(1), $($before),*), (PopTempN(1), $($after),*))
+            pat!(($($before),*), (CopyToUnder(1), $($before),*), (PopUnder(1), $($after),*))
         };
         (($($before:expr),*), $after:expr) => {
-            pat!(($($before),*), (CopyToTempN(1), $($before),*), (PopTempN(1), $after))
+            pat!(($($before),*), (CopyToUnder(1), $($before),*), (PopUnder(1), $after))
         };
         ($before:expr, ($($after:expr),*)) => {
-            pat!($before, (CopyToTempN(1), $before), (PopTempN(1), $($after),*))
+            pat!($before, (CopyToUnder(1), $before), (PopUnder(1), $($after),*))
         };
         ($before:expr, $after:expr) => {
-            pat!($before, (CopyToTempN(1), $before), (PopTempN(1), $after))
+            pat!($before, (CopyToUnder(1), $before), (PopUnder(1), $after))
         };
     }
 
     /// Copy 1 value to the temp stack after the "before", and pop it before the "after"
     macro_rules! store1copy {
         ($before:expr, $after:expr) => {
-            pat!($before, ($before, CopyToTempN(1)), (PopTempN(1), $after),)
+            pat!($before, ($before, CopyToUnder(1)), (PopUnder(1), $after),)
         };
     }
 
     /// Copy 2 values to the temp stack before the "before", and pop them before the "after"
     macro_rules! stash2 {
         (($($before:expr),*)) => {
-            pat!(($($before),*), (CopyToTempN(2), $($before),*), (PopTempN(2), $($before),*))
+            pat!(($($before),*), (CopyToUnder(2), $($before),*), (PopUnder(2), $($before),*))
         };
         (($($before:expr),*), ($($after:expr),*)) => {
-            pat!(($($before),*), (CopyToTempN(2), $($before),*), (PopTempN(2), $($after),*))
+            pat!(($($before),*), (CopyToUnder(2), $($before),*), (PopUnder(2), $($after),*))
         };
         (($($before:expr),*), $after:expr) => {
-            pat!(($($before),*), (CopyToTempN(2), $($before),*), (PopTempN(2), $after))
+            pat!(($($before),*), (CopyToUnder(2), $($before),*), (PopUnder(2), $after))
         };
         ($before:expr, ($($after:expr),*)) => {
-            pat!($before, (CopyToTempN(2), $before), (PopTempN(2), $($after),*))
+            pat!($before, (CopyToUnder(2), $before), (PopUnder(2), $($after),*))
         };
         ($before:expr, $after:expr) => {
-            pat!($before, (CopyToTempN(2), $before), (PopTempN(2), $after))
+            pat!($before, (CopyToUnder(2), $before), (PopUnder(2), $after))
         };
     }
 
@@ -307,8 +312,8 @@ pub(crate) fn under_instrs(
         ($before:expr) => {
             pat!(
                 $before,
-                (Dup, $before, Flip, Over, Sub, PushTempN(1)),
-                (PopTempN(1), Add)
+                (Dup, $before, Flip, Over, Sub, PushToUnder(1)),
+                (PopUnder(1), Add)
             )
         };
     }
@@ -349,8 +354,8 @@ pub(crate) fn under_instrs(
         &dyad!(Div, Mul),
         &maybe_val!(pat!(
             Mod,
-            (Over, Over, Flip, Over, Div, Floor, Mul, PushTempN(1), Mod),
-            (PopTempN(1), Add)
+            (Over, Over, Flip, Over, Div, Floor, Mul, PushToUnder(1), Mod),
+            (PopUnder(1), Add)
         )),
         // Exponential math
         &maybe_val!(stash1!((Flip, Pow), Log)),
@@ -365,37 +370,37 @@ pub(crate) fn under_instrs(
         &stash1!(Abs, (Sign, Mul)),
         &stash1!(Sign, (Abs, Mul)),
         // Pop
-        &pat!(Pop, (PushTempN(1)), (PopTempN(1))),
+        &pat!(Pop, (PushToUnder(1)), (PopUnder(1))),
         // Array restructuring
         &maybe_val!(stash2!(Take, UndoTake)),
         &maybe_val!(stash2!(Drop, UndoDrop)),
         &maybe_val!(pat!(
             Keep,
-            (CopyToTempN(2), Keep),
-            (PopTempN(1), Flip, PopTempN(1), UndoKeep),
+            (CopyToUnder(2), Keep),
+            (PopUnder(1), Flip, PopUnder(1), UndoKeep),
         )),
         &stash1!(Rotate, (Neg, Rotate)),
         &maybe_val!(pat!(
             Join,
-            (Over, Shape, Over, Shape, PushTempN(2), Join),
-            (PopTempN(2), UndoJoin),
+            (Over, Shape, Over, Shape, PushToUnder(2), Join),
+            (PopUnder(2), UndoJoin),
         )),
         // Rise and fall
         &pat!(
             Rise,
-            (CopyToTempN(1), Rise, Dup, Rise, PushTempN(1)),
-            (PopTempN(1), Select, PopTempN(1), Flip, Select)
+            (CopyToUnder(1), Rise, Dup, Rise, PushToUnder(1)),
+            (PopUnder(1), Select, PopUnder(1), Flip, Select)
         ),
         &pat!(
             Fall,
-            (CopyToTempN(1), Fall, Dup, Rise, PushTempN(1)),
-            (PopTempN(1), Select, PopTempN(1), Flip, Select)
+            (CopyToUnder(1), Fall, Dup, Rise, PushToUnder(1)),
+            (PopUnder(1), Select, PopUnder(1), Flip, Select)
         ),
         // Index of
         &maybe_val!(pat!(
             IndexOf,
-            (Over, PushTempN(1), IndexOf),
-            (PopTempN(1), Flip, Select)
+            (Over, PushToUnder(1), IndexOf),
+            (PopUnder(1), Flip, Select)
         )),
         // Value retrieval
         &stash1!(First, UndoFirst),
@@ -405,45 +410,45 @@ pub(crate) fn under_instrs(
         // Map control
         &maybe_val!(pat!(
             Get,
-            (CopyToTempN(2), Get),
-            (PopTempN(1), Flip, PopTempN(1), Insert),
+            (CopyToUnder(2), Get),
+            (PopUnder(1), Flip, PopUnder(1), Insert),
         )),
         &maybe_val!(stash2!(Remove, UndoRemove)),
         &maybe_val!(pat!(
             Insert,
-            (CopyToTempN(3), Insert),
-            (PopTempN(3), UndoInsert)
+            (CopyToUnder(3), Insert),
+            (PopUnder(3), UndoInsert)
         )),
         // Shaping
         &stash1!(Shape, (Flip, Reshape)),
         &pat!(
             Deshape,
-            (Dup, Shape, PushTempN(1), Deshape),
-            (PopTempN(1), 0, UndoRerank),
+            (Dup, Shape, PushToUnder(1), Deshape),
+            (PopUnder(1), 0, UndoRerank),
         ),
         &maybe_val!(pat!(
             Rerank,
-            (Over, Shape, Over, PushTempN(2), Rerank),
-            (PopTempN(2), UndoRerank),
+            (Over, Shape, Over, PushToUnder(2), Rerank),
+            (PopUnder(2), UndoRerank),
         )),
         &maybe_val!(pat!(
             Reshape,
-            (Over, Shape, PushTempN(1), Reshape),
-            (PopTempN(1), UndoReshape),
+            (Over, Shape, PushToUnder(1), Reshape),
+            (PopUnder(1), UndoReshape),
         )),
         // Classify and deduplicate
         &pat!(
             Classify,
-            (Dup, Deduplicate, PushTempN(1), Classify),
-            (PopTempN(1), Flip, Select),
+            (Dup, Deduplicate, PushToUnder(1), Classify),
+            (PopUnder(1), Flip, Select),
         ),
         &pat!(
             Deduplicate,
-            (Dup, Classify, PushTempN(1), Deduplicate),
-            (PopTempN(1), Select),
+            (Dup, Classify, PushToUnder(1), Deduplicate),
+            (PopUnder(1), Select),
         ),
         // System stuff
-        &pat!(Now, (Now, PushTempN(1)), (PopTempN(1), Now, Flip, Sub)),
+        &pat!(Now, (Now, PushToUnder(1)), (PopUnder(1), Now, Flip, Sub)),
         &maybe_val!(store1copy!(Sys(SysOp::FOpen), Sys(SysOp::Close))),
         &maybe_val!(store1copy!(Sys(SysOp::FCreate), Sys(SysOp::Close))),
         &maybe_val!(store1copy!(Sys(SysOp::RunStream), Sys(SysOp::Close))),
@@ -581,16 +586,6 @@ fn under_trivial_pattern<'a>(
     }
 }
 
-fn invert_invert_pattern<'a>(
-    input: &'a [Instr],
-    comp: &mut Compiler,
-) -> Option<(&'a [Instr], EcoVec<Instr>)> {
-    let [Instr::PushFunc(func), Instr::Prim(Primitive::Un, _), input @ ..] = input else {
-        return None;
-    };
-    Some((input, func.instrs(comp).into()))
-}
-
 fn invert_push_pattern<'a>(
     input: &'a [Instr],
     comp: &mut Compiler,
@@ -655,14 +650,17 @@ fn invert_join_val_pattern<'a>(
     None
 }
 
-fn invert_rectify_pattern<'a>(
+fn invert_unjoin_pattern<'a>(
     input: &'a [Instr],
-    comp: &mut Compiler,
+    _: &mut Compiler,
 ) -> Option<(&'a [Instr], EcoVec<Instr>)> {
-    let [Instr::PushFunc(f), Instr::Prim(Primitive::Rectify, _), input @ ..] = input else {
+    let [Instr::Push(val), Instr::ImplPrim(ImplPrimitive::UnJoin, span), input @ ..] = input else {
         return None;
     };
-    Some((input, f.instrs(comp).into()))
+    if *val != Value::default() {
+        return None;
+    }
+    Some((input, eco_vec![Instr::Prim(Primitive::Join, *span)]))
 }
 
 fn invert_setinverse_pattern<'a>(
@@ -950,9 +948,9 @@ fn under_copy_temp_pattern<'a>(
         let (start_count, end_count) = temp_pair_counts(&mut instr_copy, &mut end_instr_copy)?;
         *start_count = *before_count;
         *end_count = *after_count;
-        inner_befores.make_mut()[0] = instr_copy.clone();
+        inner_befores.make_mut()[0] = instr_copy;
         inner_afters.make_mut()[0] = instr.clone();
-        inner_befores.push(end_instr_copy.clone());
+        inner_befores.push(end_instr_copy);
         inner_afters.push(end_instr.clone());
     }
     Some((input, (inner_befores, inner_afters)))
@@ -1021,11 +1019,15 @@ fn under_push_temp_pattern<'a>(
             }
         }
         if before_temp_count > 0 {
-            eco_vec![Instr::DropTemp {
+            let mut instrs = eco_vec![Instr::PopTemp {
                 count: before_temp_count,
                 stack: TempStack::Under,
                 span: 0,
-            }]
+            }];
+            for _ in 0..before_temp_count {
+                instrs.push(Instr::Prim(Primitive::Pop, before_temp_count))
+            }
+            instrs
         } else {
             EcoVec::new()
         }
@@ -1041,7 +1043,8 @@ fn under_push_temp_pattern<'a>(
                     *start_count -= inner_afters_sig.outputs;
                     *end_count = (*end_count).min(inner_befores_sig.outputs);
                 }
-                if inner_afters_sig.outputs > 0 {
+                let outers_sig = instrs_signature(input).ok()?;
+                if (both || outers_sig.args <= outers_sig.outputs) && inner_afters_sig.outputs > 0 {
                     afters.insert(0, start_instr);
                     afters.push(end_instr);
                 }
@@ -1438,6 +1441,40 @@ fn under_touch_pattern<'a>(
         });
     }
     Some((input, (eco_vec![instr.clone()], afters)))
+}
+
+fn invert_split_pattern<'a>(
+    input: &'a [Instr],
+    _: &mut Compiler,
+) -> Option<(&'a [Instr], EcoVec<Instr>)> {
+    let [Instr::CopyToTemp {
+        stack: TempStack::Inline,
+        count: 1,
+        ..
+    }, input @ ..] = input
+    else {
+        return None;
+    };
+    let pop_pos = input.iter().position(|instr| {
+        matches!(
+            instr,
+            Instr::PopTemp {
+                stack: TempStack::Inline,
+                count: 1,
+                ..
+            }
+        )
+    })?;
+    let (a, b) = input.split_at(pop_pos);
+    let b = &b[1..];
+    let (input, instrs) = match (a, b) {
+        (
+            [Instr::Prim(Primitive::Deduplicate, _)],
+            [Instr::Prim(Primitive::Classify, span), input @ ..],
+        ) => (input, eco_vec![Instr::Prim(Primitive::Select, *span)]),
+        _ => return None,
+    };
+    Some((input, instrs))
 }
 
 fn invert_scan_pattern<'a>(
@@ -1938,7 +1975,12 @@ impl InvertPattern for Val {
         }
         for len in (1..input.len()).rev() {
             let chunk = &input[..len];
-            if (chunk.iter()).any(|instr| instr.is_temp() || matches!(instr, Instr::PushFunc(_))) {
+            if (chunk.iter()).any(|instr| {
+                matches!(
+                    instr,
+                    Instr::PushFunc(_) | Instr::PushTemp { .. } | Instr::PopTemp { .. }
+                )
+            }) {
                 continue;
             }
             if let Ok(sig) = instrs_signature(chunk) {
@@ -1992,8 +2034,8 @@ trait AsInstr: fmt::Debug + Sync {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PushTempN(usize);
-impl AsInstr for PushTempN {
+struct PushToUnder(usize);
+impl AsInstr for PushToUnder {
     fn as_instr(&self, span: usize) -> Instr {
         Instr::PushTemp {
             stack: TempStack::Under,
@@ -2004,8 +2046,8 @@ impl AsInstr for PushTempN {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CopyToTempN(usize);
-impl AsInstr for CopyToTempN {
+struct CopyToUnder(usize);
+impl AsInstr for CopyToUnder {
     fn as_instr(&self, span: usize) -> Instr {
         Instr::CopyToTemp {
             stack: TempStack::Under,
@@ -2016,11 +2058,35 @@ impl AsInstr for CopyToTempN {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PopTempN(usize);
-impl AsInstr for PopTempN {
+struct CopyToInline(usize);
+impl AsInstr for CopyToInline {
+    fn as_instr(&self, span: usize) -> Instr {
+        Instr::CopyToTemp {
+            stack: TempStack::Inline,
+            count: self.0,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PopUnder(usize);
+impl AsInstr for PopUnder {
     fn as_instr(&self, span: usize) -> Instr {
         Instr::PopTemp {
             stack: TempStack::Under,
+            count: self.0,
+            span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PopInline(usize);
+impl AsInstr for PopInline {
+    fn as_instr(&self, span: usize) -> Instr {
+        Instr::PopTemp {
+            stack: TempStack::Inline,
             count: self.0,
             span,
         }

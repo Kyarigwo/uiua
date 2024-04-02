@@ -24,7 +24,7 @@ use crate::{
     function::*,
     lex::Span,
     value::Value,
-    Assembly, Compiler, Complex, Global, Ident, Inputs, IntoSysBackend, LocalName, Primitive,
+    Assembly, BindingKind, Compiler, Complex, Ident, Inputs, IntoSysBackend, LocalName, Primitive,
     SafeSys, SysBackend, SysOp, TraceFrame, UiuaError, UiuaResult, VERSION,
 };
 
@@ -49,10 +49,10 @@ pub(crate) struct Runtime {
     pub(crate) array_stack: Vec<usize>,
     /// The call stack
     call_stack: Vec<StackFrame>,
-    /// The recur stack
-    this_stack: Vec<usize>,
+    /// The stack for tracking recursion points
+    recur_stack: Vec<usize>,
     /// The fill stack
-    fill_stack: Vec<Value>,
+    fill_stack: Vec<Fill>,
     /// The locals stack
     pub(crate) locals_stack: Vec<Vec<Value>>,
     /// A limit on the execution duration in milliseconds
@@ -171,6 +171,12 @@ impl FromStr for RunMode {
     }
 }
 
+#[derive(Clone)]
+struct Fill {
+    value: Value,
+    removed: bool,
+}
+
 impl Default for Runtime {
     fn default() -> Self {
         Runtime {
@@ -186,7 +192,7 @@ impl Default for Runtime {
                 pc: 0,
                 spans: Vec::new(),
             }],
-            this_stack: Vec::new(),
+            recur_stack: Vec::new(),
             fill_stack: Vec::new(),
             locals_stack: Vec::new(),
             backend: Arc::new(SafeSys::default()),
@@ -294,14 +300,10 @@ impl Uiua {
         Ok(comp)
     }
     /// Run a string as Uiua code
-    ///
-    /// This is equivalent to [`Uiua::load_str`]`(&mut self, intput).and_then(`[`Chunk::run`]`)`
     pub fn run_str(&mut self, input: &str) -> UiuaResult<Compiler> {
         self.compile_run(|comp| comp.load_str(input))
     }
     /// Run a file as Uiua code
-    ///
-    /// This is equivalent to [`Uiua::load_file`]`(&mut self, path).and_then(`[`Chunk::run`]`)`
     pub fn run_file<P: AsRef<Path>>(&mut self, path: P) -> UiuaResult<Compiler> {
         self.compile_run(|comp| comp.load_file(path))
     }
@@ -469,25 +471,25 @@ code:
                     Ok(())
                 }
                 &Instr::CallGlobal { index, call, .. } => {
-                    match self.asm.bindings[index].global.clone() {
-                        Global::Const(Some(val)) => {
+                    match self.asm.bindings[index].kind.clone() {
+                        BindingKind::Const(Some(val)) => {
                             self.rt.stack.push(val);
                             Ok(())
                         }
-                        Global::Const(None) => Err(self.error(
+                        BindingKind::Const(None) => Err(self.error(
                             "Called unbound constant. \
                             This is a bug in the interpreter.",
                         )),
-                        Global::Func(f) if call => self.call(f),
-                        Global::Func(f) => {
+                        BindingKind::Func(f) if call => self.call(f),
+                        BindingKind::Func(f) => {
                             self.rt.function_stack.push(f);
                             Ok(())
                         }
-                        Global::Module { .. } => Err(self.error(
+                        BindingKind::Module { .. } => Err(self.error(
                             "Called module global. \
                             This is a bug in the interpreter.",
                         )),
-                        Global::Macro => Err(self.error(
+                        BindingKind::Macro => Err(self.error(
                             "Called modifier global. \
                             This is a bug in the interpreter.",
                         )),
@@ -677,30 +679,6 @@ code:
                         let value = env.rt.stack[env.rt.stack.len() - i - 1].clone();
                         env.rt.temp_stacks[stack as usize].push(value);
                     }
-                    Ok(())
-                }),
-                &Instr::CopyFromTemp {
-                    stack,
-                    offset,
-                    count,
-                    span,
-                } => self.with_span(span, |env| {
-                    if env.rt.temp_stacks[stack as usize].len() < offset + count {
-                        return Err(env.error("Stack was empty when copying saved value"));
-                    }
-                    let start = env.rt.temp_stacks[stack as usize].len() - offset;
-                    for i in 0..count {
-                        let value = env.rt.temp_stacks[stack as usize][start - i - 1].clone();
-                        env.push(value);
-                    }
-                    Ok(())
-                }),
-                &Instr::DropTemp { stack, count, span } => self.with_span(span, |env| {
-                    let stack = &mut env.rt.temp_stacks[stack as usize];
-                    if stack.len() < count {
-                        return Err(env.error("Stack was empty when dropping saved value"));
-                    }
-                    stack.truncate(stack.len() - count);
                     Ok(())
                 }),
                 Instr::PushSig(_) => Err(self.error(
@@ -1031,7 +1009,7 @@ code:
     pub fn bound_values(&self) -> HashMap<Ident, Value> {
         let mut bindings = HashMap::new();
         for binding in &self.asm.bindings {
-            if let Global::Const(Some(val)) = &binding.global {
+            if let BindingKind::Const(Some(val)) = &binding.kind {
                 let name = binding.span.as_str(self.inputs(), |s| s.into());
                 bindings.insert(name, val.clone());
             }
@@ -1042,7 +1020,7 @@ code:
     pub fn bound_functions(&self) -> HashMap<Ident, Function> {
         let mut bindings = HashMap::new();
         for binding in &self.asm.bindings {
-            if let Global::Func(f) = &binding.global {
+            if let BindingKind::Func(f) = &binding.kind {
                 let name = binding.span.as_str(self.inputs(), |s| s.into());
                 bindings.insert(name, f.clone());
             }
@@ -1060,6 +1038,22 @@ code:
             )));
         }
         Ok(self.rt.stack.iter().rev().take(n).rev().cloned().collect())
+    }
+    pub(crate) fn dup_n(&mut self, n: usize) -> UiuaResult {
+        if self.rt.stack.len() < n {
+            return Err(self.error(format!(
+                "Stack was empty evaluating argument {}",
+                n - self.rt.stack.len()
+            )));
+        }
+        let start = self.rt.stack.len() - n;
+        for bottom in &mut self.rt.array_stack {
+            *bottom = (*bottom).min(start);
+        }
+        for i in 0..n {
+            self.push(self.rt.stack[start + i].clone());
+        }
+        Ok(())
     }
     pub(crate) fn monadic_ref<V: Into<Value>>(&mut self, f: fn(&Value) -> V) -> UiuaResult {
         let value = self.pop(1)?;
@@ -1152,7 +1146,7 @@ code:
         self.rt.temp_stacks[stack as usize].truncate(size);
     }
     pub(crate) fn num_fill(&self) -> Result<f64, &'static str> {
-        match self.rt.fill_stack.last() {
+        match self.value_fill() {
             Some(Value::Num(n)) if n.rank() == 0 => Ok(n.data[0]),
             Some(Value::Num(_)) => Err(self.fill_error(true)),
             Some(Value::Byte(n)) if n.rank() == 0 => Ok(n.data[0] as f64),
@@ -1161,7 +1155,7 @@ code:
         }
     }
     pub(crate) fn byte_fill(&self) -> Result<u8, &'static str> {
-        match self.rt.fill_stack.last() {
+        match self.value_fill() {
             Some(Value::Num(n))
                 if n.rank() == 0
                     && n.data[0].fract() == 0.0
@@ -1177,14 +1171,14 @@ code:
         }
     }
     pub(crate) fn char_fill(&self) -> Result<char, &'static str> {
-        match self.rt.fill_stack.last() {
+        match self.value_fill() {
             Some(Value::Char(c)) if c.rank() == 0 => Ok(c.data[0]),
             Some(Value::Char(_)) => Err(self.fill_error(true)),
             _ => Err(self.fill_error(false)),
         }
     }
     pub(crate) fn box_fill(&self) -> Result<Boxed, &'static str> {
-        match self.rt.fill_stack.last() {
+        match self.value_fill() {
             Some(Value::Box(b)) if b.rank() == 0 => Ok(b.data[0].clone()),
             Some(Value::Box(_)) => Err(self.fill_error(true)),
             Some(val) => Ok(Boxed(val.clone())),
@@ -1192,7 +1186,7 @@ code:
         }
     }
     pub(crate) fn complex_fill(&self) -> Result<Complex, &'static str> {
-        match self.rt.fill_stack.last() {
+        match self.value_fill() {
             Some(Value::Num(n)) if n.rank() == 0 => Ok(Complex::new(n.data[0], 0.0)),
             Some(Value::Num(_)) => Err(self.fill_error(true)),
             Some(Value::Byte(n)) if n.rank() == 0 => Ok(Complex::new(n.data[0] as f64, 0.0)),
@@ -1203,11 +1197,16 @@ code:
         }
     }
     pub(crate) fn value_fill(&self) -> Option<&Value> {
-        self.rt.fill_stack.last()
+        (self.rt.fill_stack.iter().rev())
+            .find(|fill| !fill.removed)
+            .map(|fill| &fill.value)
+    }
+    pub(crate) fn last_fill(&self) -> Option<&Value> {
+        self.rt.fill_stack.last().map(|fill| &fill.value)
     }
     fn fill_error(&self, scalar: bool) -> &'static str {
         if scalar {
-            match self.rt.fill_stack.last() {
+            match self.value_fill() {
                 Some(Value::Num(_)) => ". A number fill is set, but is is not a scalar.",
                 Some(Value::Byte(_)) => ". A number fill is set, but is is not a scalar.",
                 Some(Value::Char(_)) => ". A character fill is set, but is is not a scalar.",
@@ -1216,7 +1215,7 @@ code:
                 None => "",
             }
         } else {
-            match self.rt.fill_stack.last() {
+            match self.value_fill() {
                 Some(Value::Num(_)) => ". A number fill is set, but the array is not numbers.",
                 Some(Value::Byte(_)) => ". A number fill is set, but the array is not numbers.",
                 Some(Value::Char(_)) => {
@@ -1233,20 +1232,50 @@ code:
     /// Do something with the fill context set
     pub(crate) fn with_fill<T>(
         &mut self,
-        fill: Value,
+        value: Value,
         in_ctx: impl FnOnce(&mut Self) -> UiuaResult<T>,
     ) -> UiuaResult<T> {
-        self.rt.fill_stack.push(fill);
+        self.rt.fill_stack.push(Fill {
+            value,
+            removed: false,
+        });
         let res = in_ctx(self);
         self.rt.fill_stack.pop();
         res
     }
     /// Do something with the top fill context unset
     pub(crate) fn without_fill<T>(&mut self, in_ctx: impl FnOnce(&mut Self) -> T) -> T {
-        let fill = self.rt.fill_stack.pop();
+        let Some(pos) = (self.rt.fill_stack.iter()).rposition(|fill| !fill.removed) else {
+            return in_ctx(self);
+        };
+        self.rt.fill_stack[pos].removed = true;
         let res = in_ctx(self);
-        self.rt.fill_stack.extend(fill);
+        self.rt.fill_stack[pos].removed = false;
         res
+    }
+    pub(crate) fn without_fill_but(
+        &mut self,
+        n: usize,
+        but: impl FnOnce(&mut Self) -> UiuaResult,
+        in_ctx: impl FnOnce(&mut Self) -> UiuaResult,
+    ) -> UiuaResult {
+        let fills = self
+            .rt
+            .fill_stack
+            .split_off(self.rt.fill_stack.len().max(n) - n);
+        if fills.len() < n {
+            for _ in 0..n - fills.len() {
+                self.push(Value::default());
+            }
+        }
+        for fill in fills.iter().rev().cloned() {
+            self.push(fill.value);
+        }
+        let res1 = but(self);
+        let res2 = in_ctx(self);
+        self.rt.fill_stack.extend(fills.into_iter().rev());
+        res1?;
+        res2
     }
     pub(crate) fn call_frames(&self) -> impl DoubleEndedIterator<Item = &StackFrame> {
         self.rt.call_stack.iter()
@@ -1260,15 +1289,15 @@ code:
     }
     pub(crate) fn call_with_this(&mut self, f: Function) -> UiuaResult {
         let call_height = self.rt.call_stack.len();
-        let with_height = self.rt.this_stack.len();
-        self.rt.this_stack.push(self.rt.call_stack.len());
+        let with_height = self.rt.recur_stack.len();
+        self.rt.recur_stack.push(self.rt.call_stack.len());
         let res = self.call(f);
         self.rt.call_stack.truncate(call_height);
-        self.rt.this_stack.truncate(with_height);
+        self.rt.recur_stack.truncate(with_height);
         res
     }
     pub(crate) fn recur(&mut self) -> UiuaResult {
-        let Some(i) = self.rt.this_stack.last().copied() else {
+        let Some(i) = self.rt.recur_stack.last().copied() else {
             return Err(self.error("No recursion context set"));
         };
         let mut frame = self.rt.call_stack[i].clone();
@@ -1308,7 +1337,7 @@ code:
                 temp_stacks: [Vec::new(), Vec::new()],
                 array_stack: Vec::new(),
                 fill_stack: Vec::new(),
-                this_stack: self.rt.this_stack.clone(),
+                recur_stack: self.rt.recur_stack.clone(),
                 locals_stack: Vec::new(),
                 call_stack: Vec::new(),
                 time_instrs: self.rt.time_instrs,

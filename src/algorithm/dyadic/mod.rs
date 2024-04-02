@@ -13,8 +13,10 @@ use std::{
 };
 
 use ecow::{eco_vec, EcoVec};
+use rayon::prelude::*;
 
 use crate::{
+    algorithm::pervade::{self, bin_pervade_recursive, InfalliblePervasiveFn},
     array::*,
     boxed::Boxed,
     cowslice::{cowslice, CowSlice},
@@ -22,7 +24,7 @@ use crate::{
     Shape, Uiua, UiuaResult,
 };
 
-use super::{ArrayCmpSlice, FillContext};
+use super::{shape_prefixes_match, ArrayCmpSlice, FillContext};
 
 impl Value {
     pub(crate) fn bin_coerce_to_boxes<T, C: FillContext, E: ToString>(
@@ -148,7 +150,7 @@ impl Value {
     pub fn reshape(&mut self, shape: &Self, env: &Uiua) -> UiuaResult {
         let target_shape = shape.as_number_list(
             env,
-            "Shape should be a single natural number \
+            "Shape should be a single integer \
             or a list of integers or infinity",
             |n| n.fract() == 0.0 || n.is_infinite(),
             |n| {
@@ -192,7 +194,7 @@ impl Value {
         if old_shape.as_nat(env, "").is_ok() {
             return Err(env.error("Cannot undo scalar reshae"));
         }
-        let orig_shape = old_shape.as_nats(env, "Shape should be a list of natural numbers")?;
+        let orig_shape = old_shape.as_nats(env, "Shape should be a list of integers")?;
         if orig_shape.iter().product::<usize>() == self.shape().iter().product::<usize>() {
             *self.shape_mut() = Shape::from(orig_shape.as_slice());
             Ok(())
@@ -246,9 +248,7 @@ impl<T: ArrayValue> Array<T> {
         if (axes.first()).map_or(true, |&d| d.unsigned_abs() != self.row_count()) {
             self.take_map_keys();
         }
-        let reversed_axes: Vec<usize> = axes
-            .iter()
-            .enumerate()
+        let reversed_axes: Vec<usize> = (axes.iter().enumerate())
             .filter_map(|(i, &s)| if s < 0 { Some(i) } else { None })
             .collect();
         let shape: Shape = axes.iter().map(|&s| s.unsigned_abs()).collect();
@@ -368,7 +368,7 @@ impl Value {
     /// `rerank` this value with another
     pub fn rerank(&mut self, rank: &Self, env: &Uiua) -> UiuaResult {
         self.take_map_keys();
-        let irank = rank.as_int(env, "Rank must be a natural number")?;
+        let irank = rank.as_int(env, "Rank must be an integer")?;
         let shape = self.shape_mut();
         let rank = irank.unsigned_abs();
         if irank >= 0 {
@@ -411,7 +411,7 @@ impl Value {
             }
             return Ok(());
         }
-        let irank = rank.as_int(env, "Rank must be a natural number")?;
+        let irank = rank.as_int(env, "Rank must be an integer")?;
         let orig_shape = orig_shape.as_nats(env, "Shape must be a list of natural numbers")?;
         let rank = irank.unsigned_abs();
         let new_shape: Shape = if irank >= 0 {
@@ -420,17 +420,13 @@ impl Value {
                 .iter()
                 .take(orig_shape.len().saturating_sub(rank))
                 .chain(
-                    self.shape()
-                        .iter()
-                        .skip((rank + 1).saturating_sub(orig_shape.len()).max(1)),
+                    (self.shape().iter()).skip((rank + 1).saturating_sub(orig_shape.len()).max(1)),
                 )
                 .copied()
                 .collect()
         } else {
             // Negative rank
-            orig_shape
-                .iter()
-                .take(rank)
+            (orig_shape.iter().take(rank))
                 .chain(self.shape().iter().skip(1))
                 .copied()
                 .collect()
@@ -828,11 +824,7 @@ impl<T: ArrayValue> Array<T> {
         }
         let mut size_spec = Vec::with_capacity(isize_spec.len());
         for (d, s) in self.shape.iter().zip(isize_spec) {
-            size_spec.push(if *s >= 0 {
-                *s as usize
-            } else {
-                (*d as isize + 1 + *s).max(0) as usize
-            });
+            size_spec.push(if *s >= 0 { *s } else { *d as isize + 1 + *s });
         }
         // Determine the shape of the windows array
         let mut new_shape = Shape::with_capacity(self.shape.len() + size_spec.len());
@@ -840,19 +832,19 @@ impl<T: ArrayValue> Array<T> {
             self.shape
                 .iter()
                 .zip(&size_spec)
-                .map(|(a, b)| (a + 1).saturating_sub(*b)),
+                .map(|(a, b)| ((*a as isize + 1) - *b).max(0) as usize),
         );
-        new_shape.extend_from_slice(&size_spec);
+        new_shape.extend(size_spec.iter().map(|&s| s.max(0) as usize));
         new_shape.extend_from_slice(&self.shape[size_spec.len()..]);
         // Check if the window size is too large
         for (size, sh) in size_spec.iter().zip(&self.shape) {
-            if *size > *sh {
+            if *size <= 0 || *size > *sh as isize {
                 return Ok(Self::new(new_shape, CowSlice::new()));
             }
         }
         // Make a new window shape with the same rank as the windowed array
         let mut true_size: Vec<usize> = Vec::with_capacity(self.shape.len());
-        true_size.extend(size_spec);
+        true_size.extend(size_spec.iter().map(|&s| s as usize));
         if true_size.len() < self.shape.len() {
             true_size.extend(&self.shape[true_size.len()..]);
         }
@@ -1371,10 +1363,7 @@ impl<T: ArrayValue> Array<T> {
                         elem.array_hash(&mut hasher);
                         let hash = hasher.finish();
                         result_data.push(
-                            searched_in
-                                .data
-                                .iter()
-                                .enumerate()
+                            (searched_in.data.iter().enumerate())
                                 .find(|&(i, of)| elem.array_eq(of) && used.insert((hash, i)))
                                 .map(|(i, _)| i)
                                 .unwrap_or(searched_in.row_count())
@@ -1410,17 +1399,13 @@ impl<T: ArrayValue> Array<T> {
                     if searched_for.rank() == 0 {
                         let searched_for = &searched_for.data[0];
                         Array::from(
-                            searched_in
-                                .data
-                                .iter()
+                            (searched_in.data.iter())
                                 .position(|of| searched_for.array_eq(of))
                                 .unwrap_or(searched_in.row_count())
                                 as f64,
                         )
                     } else {
-                        (searched_in
-                            .rows()
-                            .position(|r| r == *searched_for)
+                        ((searched_in.rows().position(|r| r == *searched_for))
                             .unwrap_or(searched_in.row_count()) as f64)
                             .into()
                     }
@@ -1433,5 +1418,59 @@ impl<T: ArrayValue> Array<T> {
                 }
             }
         })
+    }
+}
+
+impl Array<f64> {
+    pub(crate) fn matrix_mul(&self, other: &Self, env: &Uiua) -> UiuaResult<Self> {
+        let (a, b) = (self, other);
+        let a_row_shape = a.shape().row();
+        let b_row_shape = b.shape().row();
+        if !shape_prefixes_match(&a_row_shape, &b_row_shape) {
+            return Err(env.error(format!(
+                "Cannot multiply arrays of shape {} and {}",
+                a.shape(),
+                b.shape()
+            )));
+        }
+        let prod_shape = if a_row_shape.len() >= b_row_shape.len() {
+            &a_row_shape
+        } else {
+            &b_row_shape
+        };
+        let prod_row_shape = prod_shape.row();
+        let prod_elems = prod_row_shape.elements();
+        let mut result_data = eco_vec![0.0; self.row_count() * other.row_count() * prod_elems];
+        let result_slice = result_data.make_mut();
+        let mut result_shape = Shape::from([a.row_count(), b.row_count()]);
+        result_shape.extend(prod_row_shape.iter().copied());
+        let inner = |a_row: &[f64], res_row: &mut [f64]| {
+            let mut prod_row = vec![0.0; prod_shape.elements()];
+            let mut i = 0;
+            for b_row in b.row_slices() {
+                _ = bin_pervade_recursive(
+                    &(&*a_row_shape, a_row),
+                    &(&*b_row_shape, b_row),
+                    &mut prod_row,
+                    env,
+                    InfalliblePervasiveFn::new(pervade::mul::num_num),
+                );
+                let (sum, rest) = prod_row.split_at_mut(prod_elems);
+                for chunk in rest.chunks_exact(prod_elems) {
+                    for (a, b) in sum.iter_mut().zip(chunk.iter()) {
+                        *a += *b;
+                    }
+                }
+                res_row[i..i + prod_elems].copy_from_slice(sum);
+                i += prod_elems;
+            }
+        };
+        let iter = (a.row_slices()).zip(result_slice.chunks_exact_mut(b.row_count() * prod_elems));
+        if a.row_count() > 100 || b.row_count() > 100 {
+            (iter.par_bridge()).for_each(|(a_row, res_row)| inner(a_row, res_row));
+        } else {
+            iter.for_each(|(a_row, res_row)| inner(a_row, res_row));
+        }
+        Ok(Array::new(result_shape, result_data))
     }
 }

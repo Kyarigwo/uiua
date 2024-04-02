@@ -17,7 +17,9 @@ pub fn reduce(depth: usize, env: &mut Uiua) -> UiuaResult {
     let f = env.pop_function()?;
     let xs = env.pop(1)?;
     match (f.as_flipped_primitive(&env.asm), xs) {
-        (Some((Primitive::Join, false)), mut xs) if env.value_fill().is_none() => {
+        (Some((Primitive::Join, false)), mut xs)
+            if env.value_fill().is_none() && env.value_fill().is_none() =>
+        {
             let depth = depth.min(xs.rank());
             if xs.rank() - depth < 2 {
                 env.push(xs);
@@ -441,7 +443,9 @@ where
 }
 
 fn generic_reduce(f: Function, xs: Value, depth: usize, env: &mut Uiua) -> UiuaResult {
-    generic_reduce_impl(f, xs, depth, identity, env)
+    let val = generic_reduce_inner(f, xs, depth, identity, env)?;
+    env.push(val);
+    Ok(())
 }
 
 pub fn reduce_content(env: &mut Uiua) -> UiuaResult {
@@ -466,27 +470,8 @@ pub fn reduce_content(env: &mut Uiua) -> UiuaResult {
         env.push(acc);
         return Ok(());
     }
-    generic_reduce_impl(f, xs, 0, Value::unboxed, env)
-}
-
-fn generic_reduce_impl(
-    f: Function,
-    xs: Value,
-    depth: usize,
-    process: impl Fn(Value) -> Value + Copy,
-    env: &mut Uiua,
-) -> UiuaResult {
-    let sig = f.signature();
-    if let (0 | 1, 1) = (sig.args, sig.outputs) {
-        // Backwards compatibility for deprecated reduce behavior
-        for row in xs.into_rows() {
-            env.push(process(row));
-            env.call(f.clone())?;
-        }
-    } else {
-        let val = generic_reduce_inner(f, xs, depth, process, env)?;
-        env.push(val);
-    }
+    let val = generic_reduce_inner(f, xs, 0, Value::unboxed, env)?;
+    env.push(val);
     Ok(())
 }
 
@@ -518,8 +503,7 @@ fn generic_reduce_inner(
                         env,
                     )?);
                 }
-                let val = Value::from_row_values(new_rows, env)?;
-                Ok(val)
+                Value::from_row_values(new_rows, env)
             } else {
                 let mut acc = (env.value_fill().cloned())
                     .or_else(|| rows.next())
