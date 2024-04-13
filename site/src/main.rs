@@ -146,7 +146,7 @@ pub fn Site() -> impl IntoView {
                         <div id="top">
                             <div id="header">
                                 <div id="header-left">
-                                    <h1><A id="header-uiua" href="/"><img src="/uiua-logo.png" style="height: 1em" alt="Uiua logo" />" Uiua"</A></h1>
+                                    <h1><A id="header-uiua" href="/"><img src="/assets/uiua-logo.png" style="height: 1em" alt="Uiua logo" />" Uiua"</A></h1>
                                     <p id="subtitle">{ subtitle.clone() }</p>
                                 </div>
                                 <div id="nav">
@@ -179,7 +179,7 @@ pub fn Site() -> impl IntoView {
 }
 
 fn weewuh() {
-    if let Ok(audio) = HtmlAudioElement::new_with_src("/wee-wuh.mp3") {
+    if let Ok(audio) = HtmlAudioElement::new_with_src("/assets/wee-wuh.mp3") {
         _ = audio.play();
     }
 }
@@ -532,39 +532,50 @@ fn site() {
             let path = entry.path();
             if entry.file_type()?.is_file() {
                 for line in std::fs::read_to_string(&path)?.lines() {
-                    if let Some(code) = line.trim().strip_prefix(r#"<Editor example=""#) {
-                        let (code, should_fail) = if let Some(code) = code.strip_suffix(r#""/>"#) {
-                            (code, false)
-                        } else if let Some(code) = code.strip_suffix(r#""/> // Should fail"#) {
-                            (code, true)
+                    let (code, should_fail) =
+                        if let Some(code) = line.trim().strip_prefix(r#"<Editor example=""#) {
+                            if let Some(code) = code.strip_suffix(r#""/>"#) {
+                                (code, false)
+                            } else if let Some(code) = code.strip_suffix(r#""/> // Should fail"#) {
+                                (code, true)
+                            } else {
+                                continue;
+                            }
+                        } else if let Some(line) =
+                            line.strip_prefix("            { ").and_then(|line| {
+                                (line.split(", ").nth(2))
+                                    .and_then(|rest| rest.strip_prefix('"'))
+                                    .and_then(|rest| rest.strip_suffix("\") }"))
+                            })
+                        {
+                            (line, false)
                         } else {
                             continue;
                         };
-                        let code = code
-                            .replace("\\\\n", "<escaped-newline>")
-                            .replace("\\n", "\n")
-                            .replace("\\\"", "\"")
-                            .replace("\\\\", "\\")
-                            .replace("<escaped-newline>", "\\n");
-                        if code.contains("\"git:")
-                            || [uiua::SysOp::AudioPlay, uiua::SysOp::GifShow]
-                                .iter()
-                                .any(|p| code.contains(p.name()))
-                        {
-                            continue;
-                        }
-                        threads.push((
-                            path.to_path_buf(),
-                            code.clone(),
-                            std::thread::spawn(move || {
-                                (
-                                    uiua::Uiua::with_backend(crate::backend::WebBackend::default())
-                                        .run_str(&code),
-                                    should_fail,
-                                )
-                            }),
-                        ));
+                    let code = code
+                        .replace("\\\\n", "<escaped-newline>")
+                        .replace("\\n", "\n")
+                        .replace("\\\"", "\"")
+                        .replace("\\\\", "\\")
+                        .replace("<escaped-newline>", "\\n");
+                    if code.contains("\"git:")
+                        || [uiua::SysOp::AudioPlay, uiua::SysOp::GifShow]
+                            .iter()
+                            .any(|p| code.contains(p.name()))
+                    {
+                        continue;
                     }
+                    threads.push((
+                        path.to_path_buf(),
+                        code.clone(),
+                        std::thread::spawn(move || {
+                            (
+                                uiua::Uiua::with_backend(crate::backend::WebBackend::default())
+                                    .run_str(&code),
+                                should_fail,
+                            )
+                        }),
+                    ));
                 }
             } else if entry.file_type()?.is_dir() {
                 recurse_dir(&path, threads)?;

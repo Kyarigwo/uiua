@@ -1,16 +1,16 @@
 # Uiua Todo
 
-- 0.10
-  - Release it!
 - 0.11
-  - Non-`|2.1` `reduce`
   - `un insert` pattern
   - Allow warnings to be disabled
   - List-filled `keep`
   - `duplicate` and `over` patterns
+  - `min` and `max` patterns
   - Spatial thinking tutorial/blog
   - Full HTTPS support
+  - `uiua fmtio`
   - System functions
+    - Make array into stream
     - Excel
 - Change how functions are compiled so that compiled-out functions don't end up in the assembly
 - Multimedia

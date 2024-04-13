@@ -1088,7 +1088,7 @@ fn TutorialInverses() -> impl IntoView {
 
         <Hd id="under"><Prim prim=Under/></Hd>
         <p><Prim prim=Under/>" expresses a more powerful inversion pattern. It captures the pattern of doing some transformation, modifying the data, then undoing the transformation."</p>
-        <p>"This may not seem imediately useful, but you'll find it is a pattern you encounter everwhere, even in your everday life. You might open a drawer, take something out, then close the drawer. You might get on a bus, the bus travels, then you get off the bus."</p>
+        <p>"This may not seem immediately useful, but you'll find it is a pattern you encounter everwhere, even in your everday life. You might open a drawer, take something out, then close the drawer. You might get on a bus, the bus travels, then you get off the bus."</p>
         <p><Prim prim=Under/>" takes two functions which we will call "<code>"F"</code>" and "<code>"G"</code>". It calls "<code>"F"</code>", then calls "<code>"G"</code>", then calls an inverse of "<code>"F"</code>"."</p>
         <p>"Many functions that do not work with "<Prim prim=Un/>" work with "<Prim prim=Under/>" because "<Prim prim=Under/>" can keep track of "<em>"context"</em>". One example of this in action is "<Prim prim=Under/><Prim prim=Pick/>", which allows us to modify an element or row of an array."</p>
         <Editor example="⍜(⊡2|×10) [1 2 3 4]"/>
@@ -1313,7 +1313,7 @@ fn TutorialPatternMatching() -> impl IntoView {
         <Editor example="F ← ⍣(\n  ×10 °[1⊙3]\n| °(⊂5)\n| ⇌\n)"/>
 
         <Hd id="format-string-patterns">"Format String Patterns"</Hd>
-        <p><Prim prim=Un/>" works with format strings to extract substrings where the "<code>"_"</code>"s are. While the "<Prim prim=Regex/>" function is available, is is often more complex than is necessary. In these cases, format string patterns are more appropriate."</p>
+        <p><Prim prim=Un/>" works with format strings to extract substrings where the "<code>"_"</code>"s are. While the "<Prim prim=Regex/>" function is available, it is often more complex than is necessary. In these cases, format string patterns are more appropriate."</p>
         <Editor example="°$\"_, _, _\" \"1, 2, 3\""/>
         <Editor example="°$\"_, _, _\" \"1, 2, 3, 4, 5\""/>
         <Editor example="°$\"Hello, _!\" \"Hello, World!\""/>
@@ -1708,6 +1708,7 @@ fn TutorialModules() -> impl IntoView {
         <p>"On the site, code is pulled from a "<code>"lib.ua"</code>" file at the root of the repository. Loading other files is not supported."</p>
         <p>"To use Git modules in the "<A href="/docs/install">"native interpreter"</A>", you must have Git installed. The repository is added as a Git submodule and the "<code>"lib.ua"</code>" file is loaded as the module's contents."</p>
         <p>"The native interpreter also supports adding an additional "<code>"branch: <branch-name>"</code>" specifier after the URL."</p>
+        <p>"You can find a curated list of Uiua modules "<a href="https://github.com/uiua-lang/uiua-modules">"here"</a>"."</p>
     }
 }
 

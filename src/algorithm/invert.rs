@@ -18,7 +18,7 @@ pub(crate) fn match_pattern(env: &mut Uiua) -> UiuaResult {
     let pat = env.pop(1)?;
     let val = env.pop(2)?;
     if val != pat {
-        return Err(env.error("Pattern match failed"));
+        return Err(env.pattern_match_error());
     }
     Ok(())
 }
@@ -31,7 +31,7 @@ pub(crate) fn match_format_pattern(parts: EcoVec<EcoString>, env: &mut Uiua) -> 
         [] => {}
         [part] => {
             if val != part.as_ref() {
-                return Err(env.error("Pattern match failed"));
+                return Err(env.pattern_match_error());
             }
         }
         _ => {
@@ -53,7 +53,7 @@ pub(crate) fn match_format_pattern(parts: EcoVec<EcoString>, env: &mut Uiua) -> 
                     Regex::new(&re).unwrap()
                 });
                 if !re.is_match(val.as_ref()) {
-                    return Err(env.error("Pattern match failed"));
+                    return Err(env.pattern_match_error());
                 }
                 let captures = re.captures(val.as_ref()).unwrap();
                 let caps: Vec<_> = captures.iter().skip(1).flatten().collect();
@@ -91,6 +91,7 @@ fn prim_inverse(prim: Primitive, span: usize) -> Option<Instr> {
         Map => Instr::ImplPrim(UnMap, span),
         Trace => Instr::ImplPrim(UnTrace, span),
         Stack => Instr::ImplPrim(UnStack, span),
+        Join => Instr::ImplPrim(UnJoin, span),
         Sys(SysOp::GifDecode) => Instr::Prim(Sys(SysOp::GifEncode), span),
         Sys(SysOp::GifEncode) => Instr::Prim(Sys(SysOp::GifDecode), span),
         Sys(SysOp::AudioDecode) => Instr::Prim(Sys(SysOp::AudioEncode), span),
@@ -122,6 +123,7 @@ fn impl_prim_inverse(prim: ImplPrimitive, span: usize) -> Option<Instr> {
         UnMap => Instr::Prim(Map, span),
         UnTrace => Instr::Prim(Trace, span),
         UnStack => Instr::Prim(Stack, span),
+        UnJoin => Instr::Prim(Join, span),
         UnBox => Instr::Prim(Box, span),
         UnCsv => Instr::Prim(Csv, span),
         BothTrace => Instr::ImplPrim(UnBothTrace, span),
@@ -152,7 +154,6 @@ macro_rules! pat {
 }
 
 static INVERT_PATTERNS: &[&dyn InvertPattern] = {
-    use ImplPrimitive::*;
     use Primitive::*;
     &[
         &invert_call_pattern,
@@ -168,7 +169,7 @@ static INVERT_PATTERNS: &[&dyn InvertPattern] = {
         &invert_primes_pattern,
         &invert_format_pattern,
         &invert_join_val_pattern,
-        &invert_unjoin_pattern,
+        &invert_unjoin_pattern_pattern,
         &invert_split_pattern,
         &(Val, invert_repeat_pattern),
         &(Val, ([Rotate], [Neg, Rotate])),
@@ -185,13 +186,13 @@ static INVERT_PATTERNS: &[&dyn InvertPattern] = {
         &(Val, ([Flip, Log], [Pow])),
         &pat!((Dup, Add), (2, Div)),
         &([Dup, Mul], [Sqrt]),
-        &pat!(Join, ([], UnJoin)),
         &pat!(
             Select,
             (CopyToInline(1), Deduplicate, PopInline(1), Classify)
         ),
         &invert_temp_pattern,
         &invert_push_pattern,
+        &pat!(Dup, (Over, ImplPrimitive::MatchPattern)),
     ]
 };
 
@@ -593,6 +594,9 @@ fn invert_push_pattern<'a>(
     let [Instr::Push(val), input @ ..] = input else {
         return None;
     };
+    if let [Instr::ImplPrim(ImplPrimitive::MatchPattern, _), input @ ..] = input {
+        return Some((input, eco_vec![Instr::Push(val.clone())]));
+    }
     let mut instrs = eco_vec![Instr::Push(val.clone())];
     instrs.push(Instr::ImplPrim(
         ImplPrimitive::MatchPattern,
@@ -605,16 +609,23 @@ fn invert_format_pattern<'a>(
     input: &'a [Instr],
     _: &mut Compiler,
 ) -> Option<(&'a [Instr], EcoVec<Instr>)> {
-    let [Instr::Format { parts, span }, input @ ..] = input else {
-        return None;
-    };
-    Some((
-        input,
-        eco_vec![Instr::MatchFormatPattern {
-            parts: parts.clone(),
-            span: *span
-        }],
-    ))
+    Some(match input {
+        [Instr::Format { parts, span }, input @ ..] => (
+            input,
+            eco_vec![Instr::MatchFormatPattern {
+                parts: parts.clone(),
+                span: *span
+            }],
+        ),
+        [Instr::MatchFormatPattern { parts, span }, input @ ..] => (
+            input,
+            eco_vec![Instr::Format {
+                parts: parts.clone(),
+                span: *span
+            }],
+        ),
+        _ => return None,
+    })
 }
 
 fn invert_join_val_pattern<'a>(
@@ -636,7 +647,7 @@ fn invert_join_val_pattern<'a>(
                     span,
                 },
                 Instr::Prim(Primitive::Shape, span),
-                Instr::ImplPrim(ImplPrimitive::UnJoin, span),
+                Instr::ImplPrim(ImplPrimitive::UnJoinPattern, span),
                 Instr::PopTemp {
                     stack: TempStack::Inline,
                     count: 1,
@@ -650,17 +661,36 @@ fn invert_join_val_pattern<'a>(
     None
 }
 
-fn invert_unjoin_pattern<'a>(
+fn invert_unjoin_pattern_pattern<'a>(
     input: &'a [Instr],
-    _: &mut Compiler,
+    comp: &mut Compiler,
 ) -> Option<(&'a [Instr], EcoVec<Instr>)> {
-    let [Instr::Push(val), Instr::ImplPrim(ImplPrimitive::UnJoin, span), input @ ..] = input else {
-        return None;
-    };
-    if *val != Value::default() {
-        return None;
+    for i in 0..input.len() {
+        if let &Instr::ImplPrim(ImplPrimitive::UnJoinPattern, span) = &input[i] {
+            let [before @ .., Instr::CopyToTemp {
+                stack: TempStack::Inline,
+                count: 1,
+                ..
+            }, Instr::Prim(Primitive::Shape, _)] = &input[..i]
+            else {
+                return None;
+            };
+            let [Instr::PopTemp {
+                stack: TempStack::Inline,
+                count: 1,
+                ..
+            }, Instr::ImplPrim(ImplPrimitive::MatchPattern, _), input @ ..] = &input[i + 1..]
+            else {
+                return None;
+            };
+            let ([], mut instrs) = Val.invert_extract(before, comp)? else {
+                return None;
+            };
+            instrs.push(Instr::Prim(Primitive::Join, span));
+            return Some((input, instrs));
+        }
     }
-    Some((input, eco_vec![Instr::Prim(Primitive::Join, *span)]))
+    None
 }
 
 fn invert_setinverse_pattern<'a>(
@@ -748,11 +778,12 @@ fn under_from_inverse_pattern<'a>(
     let mut end = input.len();
     loop {
         for pattern in INVERT_PATTERNS {
-            if let Some((inp, inverse)) = pattern.invert_extract(&input[..end], comp) {
+            if let Some((inp, after)) = pattern.invert_extract(&input[..end], comp) {
+                let before = EcoVec::from(&input[..input.len() - inp.len()]);
                 if DEBUG {
-                    println!("inverted for under {:?} to {:?}", &input[..end], inverse);
+                    println!("inverted for under {:?} to {:?}", before, after);
                 }
-                return Some((inp, (input[..input.len() - inp.len()].into(), inverse)));
+                return Some((inp, (before, after)));
             }
         }
         end -= 1;
@@ -1058,6 +1089,10 @@ fn under_push_temp_pattern<'a>(
                     afters.insert(0, start_instr);
                     afters.push(end_instr);
                 }
+            }
+            Ordering::Equal if inner_afters_sig.args + 1 == inner_afters_sig.outputs => {
+                afters.insert(0, start_instr);
+                afters.push(end_instr);
             }
             _ => {}
         }
@@ -1421,7 +1456,7 @@ fn under_unpack_pattern<'a>(
             boxed: *unbox,
         },
     ]);
-    Some((input, (befores, afters)))
+    Some((&[], (befores, afters)))
 }
 
 fn under_touch_pattern<'a>(
@@ -1481,12 +1516,19 @@ fn invert_scan_pattern<'a>(
     input: &'a [Instr],
     comp: &mut Compiler,
 ) -> Option<(&'a [Instr], EcoVec<Instr>)> {
-    let [Instr::PushFunc(f), Instr::Prim(Primitive::Scan, span), input @ ..] = input else {
+    let [Instr::PushFunc(f), instr, input @ ..] = input else {
         return None;
     };
+    let (Instr::Prim(Primitive::Scan, span) | Instr::ImplPrim(ImplPrimitive::UnScan, span)) = instr
+    else {
+        return None;
+    };
+    let un = matches!(instr, Instr::ImplPrim(ImplPrimitive::UnScan, _));
     let inverse = match f.as_flipped_primitive(&comp.asm) {
-        Some((Primitive::Add, false)) => eco_vec![Instr::Prim(Primitive::Sub, *span)],
-        Some((Primitive::Mul, false)) => eco_vec![Instr::Prim(Primitive::Div, *span)],
+        Some((Primitive::Add, false)) if !un => eco_vec![Instr::Prim(Primitive::Sub, *span)],
+        Some((Primitive::Mul, false)) if !un => eco_vec![Instr::Prim(Primitive::Div, *span)],
+        Some((Primitive::Sub, false)) if un => eco_vec![Instr::Prim(Primitive::Add, *span)],
+        Some((Primitive::Div, false)) if un => eco_vec![Instr::Prim(Primitive::Mul, *span)],
         Some((Primitive::Eq, false)) => eco_vec![Instr::Prim(Primitive::Eq, *span)],
         Some((Primitive::Ne, false)) => eco_vec![Instr::Prim(Primitive::Ne, *span)],
         _ => {

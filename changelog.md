@@ -1,10 +1,28 @@
 # Uiua Changelog
 
 Uiua is not yet stable.
+<!-- This version is not yet released. If you are reading this on the website, then these changes are live here. -->
 
-## 0.10.0 - 2024-??-??
-This version is not yet released. If you are reading this on the website, then these changes are live here.
-<!-- You can find the release announcement [here](https://uiua.org/blog/uiua-0.10.0). -->
+## 0.11.0 - 2024-??-??
+### Language
+- Add [`un °`](https://uiua.org/docs/un) [`duplicate .`](https://uiua.org/docs/duplicate) pattern matching
+
+## 0.10.3 - 2024-04-09
+### Interpreter
+- Fix a crash involving pervasive operations on some 0-length arrays
+
+## 0.10.2 - 2024-04-08
+### Interpreter
+- Fix a bug in [`repeat ⍥`](https://uiua.org/docs/repeat) with [`infinity ∞`](https://uiua.org/docs/infinity) signature inference
+
+## 0.10.1 - 2024-04-07
+### Interpreter
+- [`under ⍜`](https://uiua.org/docs/under) of pattern matching now works correctly
+- [`under ⍜`](https://uiua.org/docs/under) [`un °`](https://uiua.org/docs/un) [`scan \\`](https://uiua.org/docs/scan) now works correctly
+- Style and advice diagnostics are no longer emitted from macros
+
+## 0.10.0 - 2024-04-04
+You can find the release announcement [here](https://uiua.org/blog/uiua-0.10.0).
 ### Language
 - **Breaking Change** - Multiline strings are now also *raw strings* which do not require escaping
   - They are no longer format strings by default

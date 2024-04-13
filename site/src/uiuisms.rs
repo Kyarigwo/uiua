@@ -182,7 +182,7 @@ uiuisms!(
     /// Join a list of boxed strings
     r#"/◇⊂ {"a" "bc" "def"}"#,
     /// Find the nth fibonacci number
-    "◌⍥(+⟜:)⊙.:1 10",
+    "⊢⍥(⇌\\+):1_0 10",
     /// Find the GCD of two numbers
     "◌⍢⊃◿∘± 35 360",
     /// Remove all instances of an element from a list
@@ -231,6 +231,8 @@ uiuisms!(
     "÷/+⟜⧻÷:1 [85 105 117 97]",
     /// Quadratic mean
     "√÷⧻⟜/+×. [85 105 117 97]",
+    /// Median
+    "÷2/+⊏⊟⊃⌊⌈÷2-1⧻.⊏⍏. [85 105 117 97]",
     /// Dot product
     "/+× [1 2 3] [4 ¯5 6]",
     /// Cross product

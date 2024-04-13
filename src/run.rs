@@ -372,7 +372,8 @@ impl Uiua {
                 "\
 The interpreter has crashed!
 Hooray! You found a bug!
-Please report this at http://github.com/uiua-lang/uiua/issues/new or on Discord at https://discord.gg/9CU2ME4kmn.
+Please report this at http://github.com/uiua-lang/uiua/issues/new \
+or on Discord at https://discord.gg/9CU2ME4kmn.
 
 Uiua version {VERSION}
 
@@ -898,6 +899,9 @@ code:
             self.inputs().clone().into(),
         )
     }
+    pub(crate) fn pattern_match_error(&self) -> UiuaError {
+        UiuaError::PatternMatch(self.span(), self.inputs().clone().into())
+    }
     /// Pop a value from the stack
     pub fn pop(&mut self, arg: impl StackArg) -> UiuaResult<Value> {
         let res = self.rt.stack.pop().ok_or_else(|| {
@@ -950,7 +954,7 @@ code:
     pub fn pop_string(&mut self) -> UiuaResult<String> {
         self.pop_convert(Value::as_string)
     }
-    /// Simulates popping a value and imediately pushing it back
+    /// Simulates popping a value and immediately pushing it back
     pub(crate) fn touch_array_stack(&mut self, n: usize) -> UiuaResult {
         if self.rt.stack.len() < n {
             return Err(self.error(format!(
